@@ -12,7 +12,10 @@ the **CAMSS TOP select register `0xFDA00044`**, which Windows writes and the Lin
 (1) read `0xfda00040/0xfda00044` read-only on a working CSID2 stream and during the iris one-shot;
 (2) if `0x44[1]` is 0, a one-shot that sets it before stream-on;
 (3) read the sensor OTP for `'!'` NVM config entries (section 2);
-(4) optionally compare settle `0x16` (the Windows-equivalent value, section 7) with `0x14`.
+(4) optionally compare settle `0x16`–`0x18` (Windows / mainline, sections 7 and 9) with `0x14`.
+The PHY status already latched bit 2 on exactly the two iris lanes (3 and 4) while CSID3 saw nothing,
+which points at the PHY-to-CSID link (section 9). Reading the same words on a working CSID2 stream
+is a cheap control.
 The kernel #9 readback `0x0308 = 0` is probably harmless: for model `0x0861` the original driver
 does not use `0x0308` at all (section 7).
 Sensor startup (section 1) and front-vs-iris code (section 4) showed no mismatch.
@@ -257,14 +260,52 @@ Unknown. A code search of the WOA-Project GitHub organisation (UEFI, ACPI, drive
 no reference to `FDA00040`, `FDA00044` or `0xFDA00000`. The original Lumia boot firmware is closed.
 Only a register read on the phone can answer this.
 
-## 9. Not covered again here
+## 9. PHY status words: layout, and why the existing readback matters
+
+Bit names for the 2-phase CSIPHY interrupt status are not public. The Windows drivers contain no
+decode strings (the iris driver only copies PHY `+0x18c..+0x1a8` into a diagnostic snapshot at
+`0x41ee68`), and Qualcomm's register descriptions require a login. The layout is available from
+mainline Linux [`camss-csiphy-2ph-1-0.c`](https://github.com/torvalds/linux/blob/master/drivers/media/platform/qcom/camss/camss-csiphy-2ph-1-0.c),
+which uses the same offsets as MSM8994 (`GLBL_RESET 0x140`, `GLBL_PWR_CFG 0x144`,
+`INTERRUPT_STATUSn 0x18c + 4n`, `MASKn 0x1ac + 4n`, `CLEARn 0x1cc + 4n`). Its lane setup writes
+`MASK(l) = CLEAR(l) = 0x3f` **for each enabled lane `l`**, so the per-lane status word index equals the
+lane position, with 6 event bits per lane.
+
+LumiaFaceID's kernels #7 and #8 recorded **status words 3 and 4 = `0x4`** and word 6 = `0x10`, while words
+0–2 stayed 0. The iris uses combo lane mask `0x18`: **lane 3 is the clock and lane 4 the data lane.**
+So the same bit (bit 2) was latched on exactly the two iris lanes and on no other lane. The bit's
+name is still unknown. But if word `n` is lane `n`, then the PHY observed *some* lane-level event on
+the iris lanes while CSID3 counted nothing. That is the signature of a break **between PHY and CSID**,
+which is exactly where the CAMSS TOP mux/select registers (section 3) sit.
+
+**Cheap control:** read the same eight words during the working front stream on CSID2 (lanes 0–2).
+If bit 2 also appears on the front's lanes there, it is a normal lane-activity indicator, and the
+iris result means the sensor does drive its lanes. If it does not, bit 2 is more likely an error or
+idle-state flag. Remember that the owning IRQ handler clears these words, so a zero is not proof of
+inactivity.
+
+### Settle: three sources
+
+At the computed link (DDR) clock of ≈ 350.4 MHz (section 7) and a 200 MHz PHY timer:
+
+| Source | Formula | Value |
+| --- | --- | --- |
+| LumiaFaceID diagnostic | fixed | `0x14` |
+| Original Windows driver | `(4e9/ddr + 100 ns) × timer + 0.5` | `0x16` |
+| Mainline Linux 2ph | `((85 + 6·UI) + (145 + 10·UI)) / 2` ns ÷ timer period − 1 | `0x18` |
+
+(UI ≈ 1.43 ns at 700.8 Mbit/s.) The diagnostic is the lowest of the three. A too-short settle usually
+causes SoT/ECC errors rather than silence, so this stays secondary to section 3. If settle is ever
+compared, `0x16`–`0x18` is the supported range.
+
+## 10. Not covered again here
 
 - Windows CSIPHY/CSID programming in the iris driver (`0x83d220` maps PHY2 at `0xfda0b400`; lane
   construction, `CORE_CTRL_1` bit 16, statistics readers) is already analysed in LumiaFaceID's
   `docs/iris-csi.md`. This pass found nothing that contradicts it. The one receiver-side item missing
   there is the CAMSS TOP select register in section 3.
 - `qccamisp8994.sys` handles only VFE/CPP (image processing). It contains no CSID or CSIPHY setup.
-- PHY status bit names are still not recovered.
+- PHY status bit names are still not recovered (section 9 gives the layout only).
 - Nothing was run on a phone.
 
 Reproduce:
