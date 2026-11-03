@@ -1,0 +1,5 @@
+work/
+*.bin
+*.sys
+*.dll
+.DS_Store
