@@ -12,7 +12,9 @@ the **CAMSS TOP select register `0xFDA00044`**, which Windows writes and the Lin
 (1) read `0xfda00040/0xfda00044` read-only on a working CSID2 stream and during the iris one-shot;
 (2) if `0x44[1]` is 0, a one-shot that sets it before stream-on;
 (3) read the sensor OTP for `'!'` NVM config entries (section 2);
-(4) compute the Windows settle value from the mode's DDR clock (section 3).
+(4) optionally compare settle `0x16` (the Windows-equivalent value, section 7) with `0x14`.
+The kernel #9 readback `0x0308 = 0` is probably harmless: for model `0x0861` the original driver
+does not use `0x0308` at all (section 7).
 Sensor startup (section 1) and front-vs-iris code (section 4) showed no mismatch.
 
 ## 1. Unpause (`0x411d4c` = `cam_drv_SMIApp_unpause`): independent cross-check
@@ -208,12 +210,61 @@ This is a frame provider, not a matcher. It runs exposure control from eye ROI s
 (`FlashCtrlPulseUs`, `IS.HE.FlashPulseLenghtUs`, `UseFlashOutOfFrame`). Defaults are read from camera
 init parameters, not hard-coded. It matters only after frames arrive.
 
-## 7. Not done here
+## 7. Model `0x0861` clock tree: `0x0308` is not used (`cam_drv_SMIApp_compute_output_modes`, `0x411f9c`)
 
-- The DDR clock value for the iris mode was not extracted, so the settle number above is a formula,
-  not a final value.
-- PHY status bit names are still not recovered. The ISP driver (`qccamisp8994.sys`, decompiled: 632
-  functions) was not analysed in depth.
+LumiaFaceID kernel #9 read back `0x0308 = 0x0000` although the mode program writes `0x0008`.
+The original driver computes clocks for this exact sensor with a **model-specific formula**. For
+manufacturer `0x0c` / model `0x0861` (checked at `0x411f9c`, lines testing `+0x16d == 0x0c` and
+`+0x164 == 0x861`):
+
+```c
+// generic SMIA++ sensors
+vt_pix_khz = ext * pll_mult / (pre_pll_div * vt_sys_div * vt_pix_div);
+op_pix_khz = ext * pll_mult / (pre_pll_div * op_sys_div * op_pix_div);
+// model 0x0861
+vt_pix_khz = ext * pll_mult / ((pre_pll_div + 1) * vt_sys_div);
+op_pix_khz = ext * pll_mult / ((pre_pll_div + 1) * op_sys_div);
+```
+
+Here `pre_pll_div = 0x0304`, `pll_mult = 0x0306`, `vt_sys_div = 0x0302`, `vt_pix_div = 0x0300`,
+`op_sys_div = 0x030a` and `op_pix_div = 0x0308`. For `0x0861` the driver ignores both `vt_pix_div` and
+**`op_pix_div` (`0x0308`)**, and treats the pre-divider as "value + 1". The driver still requires
+`op_pix_div` to be nonzero in the *mode program* (it rejects `op_sys_div * op_pix_div == 0`), but
+that check runs on the DCC values, not on a readback. Two reads follow from this, neither verified:
+`0x0308` may not be a real register on this sensor, or it may be write-ignored. Either way,
+**`0x0308 = 0` on readback is probably not a fault**, and it should not drive the next test.
+
+With the mode values from LumiaFaceID's `IRIS-PLL.md` (`pre = 1`, `mult = 0x92 = 146`, `vt_sys = 10`,
+`op_sys = 1`) and EXTCLK `0x099a` = 9.6 MHz (`ext x100 = 960`):
+
+| Quantity | Value |
+| --- | --- |
+| VT pixel clock | 9.6 × 146 / (2 × 10) ≈ **70.08 MHz** |
+| OP pixel clock | 9.6 × 146 / (2 × 1) / 10 ≈ **70.08 MHz** (the `× 10` is in the driver's `op` divisor) |
+| 1-lane RAW10 bit rate | ≈ 700.8 Mbit/s |
+| DDR clock (bit rate / 2) | ≈ 350.4 MHz |
+| Windows settle at 200 MHz timer | `((4e9 / 350.4e6) + 100) × 0.2 + 0.5` → **22 = `0x16`** |
+
+The diagnostic uses `0x14`. A difference of 2 ticks (10 ns) is small. Settle is therefore an unlikely
+root cause, but `0x16` is the Windows-equivalent value if it is ever compared. Assumptions to check:
+the driver's `ext` input (`DAT_0083b380`) equals the EXTCLK value, and the KMD's `MIPIDDRClock`
+equals bit rate / 2. `ConfigResolution` computes data rate as `ddr / 1000 × lanes × 2`, which supports
+the second point.
+
+## 8. Does firmware already set `0xFDA00044`?
+
+Unknown. A code search of the WOA-Project GitHub organisation (UEFI, ACPI, driver definitions) finds
+no reference to `FDA00040`, `FDA00044` or `0xFDA00000`. The original Lumia boot firmware is closed.
+Only a register read on the phone can answer this.
+
+## 9. Not covered again here
+
+- Windows CSIPHY/CSID programming in the iris driver (`0x83d220` maps PHY2 at `0xfda0b400`; lane
+  construction, `CORE_CTRL_1` bit 16, statistics readers) is already analysed in LumiaFaceID's
+  `docs/iris-csi.md`. This pass found nothing that contradicts it. The one receiver-side item missing
+  there is the CAMSS TOP select register in section 3.
+- `qccamisp8994.sys` handles only VFE/CPP (image processing). It contains no CSID or CSIPHY setup.
+- PHY status bit names are still not recovered.
 - Nothing was run on a phone.
 
 Reproduce:
