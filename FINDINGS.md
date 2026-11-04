@@ -496,6 +496,15 @@ mode. Voltages stay the same, and it is what the Linux front camera already does
 
 If this does not change `0x0005`, `BOOST_BYPASS1_B` remains the last power difference from `CAMT`.
 
+**Checked in the pinned regulator driver** (`drivers/regulator/rpm-smd-regulator.c` @ `cc84cab9`): the
+LDO mode follows the requested current. `rpm_vreg_get_optimum_mode()` stores the consumer load as the
+RPM `CURRENT` request and returns `NORMAL` only when `load_uA + system_load >= hpm_min_load`.
+`rpm_vreg_get_mode()` uses the same comparison. Neither `pm8994_l17` nor `pm8994_l3` sets
+`qcom,init-current` or `qcom,system-load` in the pinned DTs. So without a `regulator_set_optimum_mode()`
+call, the applications processor's current request for both LDOs is 0 mA, which is LPM. The RPM still
+aggregates requests from other processors, which is why the debugfs read during a trial is the
+deciding check.
+
 ### 13a. More detail from the same DSDT votes
 
 The 10-element LDO votes match Qualcomm's `PMICVREGVOTE` layout: name, type (1 = LDO), µV, µA,
