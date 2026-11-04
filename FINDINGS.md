@@ -641,7 +641,65 @@ Non-combo setups are untouched, so the front and rear cameras keep their current
 into a buffer (RAW10, 1920×1088, 2400 bytes per line, data type `0x2b`, VC0) and look at one frame.
 Then IR illumination timing (section 5).
 
-## 15. Not covered again here (update)
+## 15. Toward the first image: notes for the RDI capture step
+
+These notes are static analysis like the rest of this file, and are meant to avoid known pitfalls.
+
+**Route.** Use CSID3 → ISPIF → VFE **RDI**, not PIX. RDI writes the raw MIPI payload to memory with no
+ISP processing or tuning, which is all a first frame needs. The Windows core and ISP drivers also have
+an RDI path for sensors (core: "RDI Info from Sensor … nCSIDIndex … csiDT …"; ISP: "ispif rdi1/rdi2
+capture interface").
+
+**ISPIF supports CSID3 in the pinned kernel.** `msm_ispif_sel_csid_core()` writes 2-bit CSID fields
+into `ISPIF_VFE_m_INPUT_SEL` (RDI0 at bits 5:4, RDI1 at 13:12, RDI2 at 21:20), so `csid = 3` is valid.
+`msm_ispif_select_clk_mux()` writes the CAMSS TOP value field at `0xfda00028` (RDI, field
+`j = rdi + 3·vfe`, 4 bits each) or `0xfda00020` (PIX).
+
+**Pitfall: the CAMSS TOP select bits for ISPIF.** From section 3: the Windows platform driver writes a
+value field and a 1-bit select field for every mux it uses. For ISPIF, the value fields are at
+`+0x28` (RDI) and `+0x20` (PIX), and the **select bits are at `+0x2c` (RDI, bit `j`) and `+0x24` (PIX)**.
+Linux writes only the value fields and never the select words. For PHY2, firmware had already set
+`0x44 = 0x03`, so that case was fine. For the RDI field the iris will use, nobody has checked yet. If
+RDI delivers no data although CSID3 counts packets:
+
+1. During a working front preview, read `0xfda00020`, `0x24`, `0x28` and `0x2c` (read-only). This
+   shows which select bits firmware leaves on.
+2. During the iris RDI run, read them again. If bit `j` of `0xfda0002c` is 0 for the RDI in use, set
+   it for the run and restore it afterwards.
+
+**Frame format.**
+
+| Property | Value |
+| --- | --- |
+| Data type | `0x2b` (RAW10) |
+| Virtual channel | 0 |
+| Size | 1920 × 1088 |
+| Packing | MIPI RAW10: 4 pixels in 5 bytes, **2400 bytes per line** |
+| Frame size | 2,611,200 bytes |
+
+To view it, unpack each 5-byte group into four 10-bit pixels (the first four bytes hold the 8 MSBs
+and the fifth holds the 2 LSBs of each pixel), then treat the result as a grayscale image. An iris
+sensor is most likely monochrome. If it shows a 2×2 pattern, treat it as Bayer.
+
+**Pitfall: the exposure is tiny.** The diagnostic writes coarse integration `0x0202 = 12` lines. One
+line is `2100 / 70.08 MHz ≈ 30 µs`, so the exposure is **≈ 0.36 ms**. Windows can use that because it
+fires a strong IR pulse per frame. Without that pulse, the first frames will be almost black, and that
+does not mean capture failed. For a first look:
+
+- Raise `0x0202` to about `1000` lines (≈ 30 ms). The frame is 1116 lines, so stay below about 1100.
+- Point the sensor at something IR-bright. Sunlight, an incandescent bulb or a **TV remote with a
+  button held** are good. Most LED room lights emit little IR.
+- Only then add IR illumination with `torch_0`, keeping the existing current limits (section 5).
+
+**Make the three fixes permanent** before building the capture path. Then the normal camera stack can
+use them too:
+
+1. CSID3 DT node: add `clk_camss_csi3phy_clk` (section 11; already tested as an experiment patch).
+2. `msm_csiphy.c`: set bit 1 on upper combo lanes (section 14a).
+3. Iris supplies: load votes L17 300 mA, S3 300 mA, L3 80 mA (section 13). In a standard
+   `msm_sensor` DT node, use `qcom,cam-vreg-op-mode`.
+
+## 16. Not covered again here (update)
 
 Section 10 still applies. Sections 11–14 are static ACPI/DT/driver analysis. The results quoted at
 the start of sections 13 and 14 come from LumiaFaceID's own phone tests.
