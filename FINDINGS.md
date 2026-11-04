@@ -701,6 +701,11 @@ use them too:
 
 ## 16. IR illumination: how Windows times it, and a staged plan for Linux
 
+> **Update (section 18):** on the phone, `0x1a02` reads 0 and DCC block 5 has no record for it. With
+> that capability `0x41452c` cannot write the strobe registers, so for the iris the sensor-strobe
+> path below is generic SMIA code that does not run. The STROBE → PMIC inference below is withdrawn.
+> Step 2 of the plan is done (result 0). Step 3 is dropped.
+
 **Windows lets the sensor time the IR pulse.** The iris driver has `cam_drv_SMIApp_set_flash_strobe`
 (`0x41452c`, "Flash strobe readout sync", "Flash strobe triggering delayed to next FSC"). It programs
 the sensor's own flash-strobe output with the standard CCS/SMIA++ registers. The names below are from
@@ -750,10 +755,9 @@ the PMI8994 strobe-control bit layout before relying on that attribute.
    seconds a capture takes, then off. Stay well under 2 s per burst, which is the Windows cooldown
    threshold. Use the 30 ms exposure from the plugin. Do not look into the emitter, and keep the
    subject a hand or an object, not an eye, until the current is understood.
-2. **Read-only check that the sensor has a strobe output.** Read `0x1a02` (and the following
-   capability bytes) once. A non-zero `FLASH_MODE_CAPABILITY` confirms the strobe block that Windows
-   uses.
-3. **Windows-like pulse.** Program the sensor strobe as in the table: short exposure (for example
+2. **Read-only check that the sensor has a strobe output.** Done in LumiaFaceID `6404ee0`:
+   `0x1a00`–`0x1a0f` all read 0, so there is no sensor strobe to use (section 18).
+3. **(Dropped, see section 18.) Windows-like pulse.** Program the sensor strobe as in the table: short exposure (for example
    12 lines ≈ 0.36 ms), pulse width ≈ the exposure, readout sync. Put the PMIC LED into
    hardware-strobe mode at the lowest current. If the emitter pulses only while streaming, the
    STROBE → PMIC routing is confirmed. Only then raise the current, inside the Windows limits.
@@ -772,3 +776,53 @@ Reproduce:
 GHIDRA_INSTALL_DIR=/path/to/ghidra_12.1.4_PUBLIC rea decompile-all /abs/path/qccamsensor_tertiarySMIApp8994.sys \
   --output /abs/path/pseudo --provider ghidra
 ```
+
+## 18. Sensor info reads 0 on the phone: Windows takes it from DCC block 5
+
+LumiaFaceID `6404ee0` read the start-up info registers (`0x0080`–`0x0092`, `0x1004/6`, `0x0008`,
+`0x0006`, `0x11ca`, `0x1a00`–`0x1a0f`) after the profile, before and after stream-on. Every read was
+valid and every value was `0x0000`. The model register still read `0x0861`, and CSID3 counted 13,244
+clean packets in the same run. So the sensor does not implement these read-only CCS fields.
+
+That matches the original driver. Its start-up reads (`0x40f374`, `0x4107f8`) go through
+`cam_drv_SMIApp_read16` (`0x40ee00`). That function does the I2C read, then walks a table of `>HB`
+records (address, data byte). If a record matches the high or low byte's address, it replaces that
+byte ("Found top byte … / Overridden top byte …"). The table is entry 5 of the per-block array at
+`0x83a5e0` ({pointer, u16 count}, 8 bytes each, so `+0x28`/`+0x2c`). `0x40c5d0` stores DCC block ID
+`k` into entry `k` (`FUN_004137ac(5, …)` is logged as "Storing OVERRIDE settings"), and
+`0x414af0` maps directory IDs to the same indices. LumiaFaceID's `inspect_iris_dcc.py` already names
+block 5 `read_overrides`.
+
+Block 5 of the public `0C086101.dcc` (WOA-Project/Lumia-Drivers `b5af93f9`, SHA-256
+`656c1dd9…6a85`) gives, as 16-bit values:
+
+| Register | Value | Meaning |
+| --- | --- | --- |
+| `0x0084` / `0x0086` / `0x0088` | 56 / 448 / 1 | analogue gain code min / max / step |
+| `0x008c` / `0x0092` | 1 / 56 | gain m0 / c1. c0 and m1 have no record, so they stay 0 |
+| `0x1004` / `0x1006` | 0 / 6 | coarse integration min / max margin |
+| `0x1140` / `0x1142` | 1116 / 32767 | frame length lines min / max |
+| `0x1144` / `0x1146` | 2100 / 32767 | line length min / max |
+| `0x1184` / `0x1186` | 1927 / 1087 | x / y address max (1928×1088 array) |
+| `0x0040`–`0x0045`, `0x00c1`–`0x00c3` | frame format and data format (`0x0a0a`, RAW10) | |
+| `0x1600`–`0x1603` | `0x0201`, `0x0400` | not decoded here |
+
+So Windows uses `gain = (1·code + 0) / (0·code + 56) = code / 56`: codes 56–448 are 1×–8×, and the
+diagnostic's code 56 is unity gain. `0x0080` (gain capability), `0x0008` (pedestal), `0x0006` (pixel
+order) and `0x11ca` (monochrome) have no record, so Windows gets the sensor's 0: global gain,
+pedestal 0, CCS order 0 (GRBG). The plugin now uses these values. The sensor's real pedestal is still
+unmeasured. It only matters for black-level subtraction.
+
+**Consequence for the IR step (section 16): Windows does not use the sensor strobe for the iris.**
+`0x40ff58` reads the flash capability `0x1a02` through the same override path: bit 0 sets
+`+0x11c = 1`, bit 1 sets `+0x11c = 2`. With 0, `+0x11c` stays 0 and the strobe pulse limits
+`+0x110`/`+0x114`/`+0x118` are cleared. The strobe set-up `0x41452c` fails with error 1 when the
+requested mode is above `+0x11c`, when the mode is 0, or when the width is outside `+0x110`..`+0x114`.
+All of its `0x0c12`–`0x0c1b` writes sit inside `if (no error)`. On this sensor, with `0x1a02` reading 0
+and no block-5 record, that function can never write the strobe registers. The strobe table in
+section 16 is therefore the generic SMIA path, not what drives the iris emitter. The IR pulse has to
+most likely come from the host side: the flash driver (`qccamflashtertiary8994.sys`), driven per
+frame as `CameraAuthentication.dll` requests it. This was not traced further. For Linux this means:
+step 1 of the section 16 plan (continuous `torch_0` at the lowest current for a few seconds) is the
+way to light the first image. A later per-frame pulse would be switched by software around SOF, not
+by a sensor STROBE pin, and the PMIC hardware-strobe attribute is not needed.

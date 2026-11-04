@@ -20,12 +20,13 @@
  * ../../kernel/: camss_csi3phy_clk on CSID3, and MISC1 bit 1 on the upper
  * combo lanes. Without them the CSID counts zero packets.
  *
- * The original driver reads gain, pedestal and pixel order from the sensor at
- * start-up instead of hard-coding them (cam_drv_SMIApp at 0x40f374 and
- * 0x4107f8). The IR0861_SENSOR_* values below must be filled from one
- * read-only dump of those registers on the phone. The defaults reproduce a
- * common SMIA gain model and are placeholders. Mount angle, lens data and
- * tuning are also still placeholders.
+ * The original driver reads gain, pedestal and pixel order through
+ * cam_drv_SMIApp_read16 (0x40ee00) at start-up (0x40f374, 0x4107f8). On this
+ * sensor those registers read 0 (LumiaFaceID 6404ee0), and read16 replaces
+ * the result with DCC block 5 ("OVERRIDE", read overrides). The
+ * IR0861_SENSOR_* values below are what Windows ends up with: block 5 where it
+ * has an entry, otherwise the sensor's 0. Mount angle, lens data and tuning
+ * are still placeholders.
  *
  * The register program comes from the stock Lumia DCC (same bytes as
  * LumiaFaceID's private cityman-iris-stream-profile.hex). It must not be
@@ -79,25 +80,28 @@ static struct msm_camera_i2c_reg_array hold_off[] = {{0x0104, 0, 0}};
 #define IR0861_OUTPUT_CLOCK 70080000u
 #define IR0861_MAX_FPS      29.9f
 /*
- * Fill from the phone (all read-only, 16-bit big-endian unless noted):
- *   0x0084/0x0086/0x0088  analogue gain code min / max / step
- *   0x008c/0x008e/0x0090/0x0092  m0 / c0 / m1 / c1 (signed)
- *   0x1006                coarse integration time max margin
- *   0x0008                data pedestal (black level, 10-bit units)
- *   0x0006 (8-bit, with 0x0101 = 0)  pixel order, CCS: 0 GRBG, 1 RGGB, 2 BGGR, 3 GBRG
- * The original driver uses gain = (m0 * code + c0) / (m1 * code + c1), the
- * SMIA analogue gain model, with only a 0x022e-specific tweak (not this model).
+ * Values as Windows sees them for 0C086101.dcc (WOA-Project/Lumia-Drivers
+ * b5af93f9, SHA-256 656c1dd9...6a85), block 5, records >HB:
+ *   0x0084/0x0086/0x0088  gain code min / max / step   0x0038 / 0x01c0 / 0x0001
+ *   0x008c/0x008e/0x0090/0x0092  m0 / c0 / m1 / c1    0x0001 / (0) / (0) / 0x0038
+ *   0x1006                coarse integration max margin 0x0006
+ *   0x0008                data pedestal                 (0)
+ *   0x0006                pixel order, CCS 0 GRBG ...   (0)
+ * (0) = no override, the sensor reads 0x0000. The original driver uses the
+ * SMIA model gain = (m0 * code + c0) / (m1 * code + c1), here code / 56:
+ * codes 56..448 are 1x..8x. Block 5 also gives minimum frame/line length
+ * 1116/2100 and a 1928x1088 pixel array (x/y addr max 1927/1087).
  */
-#define IR0861_SENSOR_GAIN_CODE_MIN   0
+#define IR0861_SENSOR_GAIN_CODE_MIN   56
 #define IR0861_SENSOR_GAIN_CODE_MAX   448
 #define IR0861_SENSOR_GAIN_CODE_STEP  1
-#define IR0861_SENSOR_GAIN_M0         0
-#define IR0861_SENSOR_GAIN_C0         512
-#define IR0861_SENSOR_GAIN_M1         (-1)
-#define IR0861_SENSOR_GAIN_C1         512
-#define IR0861_SENSOR_COARSE_MARGIN   8u
-#define IR0861_SENSOR_PEDESTAL        64
-#define IR0861_SENSOR_PIXEL_ORDER_CCS 2   /* BGGR; a monochrome die still reports one */
+#define IR0861_SENSOR_GAIN_M0         1
+#define IR0861_SENSOR_GAIN_C0         0
+#define IR0861_SENSOR_GAIN_M1         0
+#define IR0861_SENSOR_GAIN_C1         56
+#define IR0861_SENSOR_COARSE_MARGIN   6u
+#define IR0861_SENSOR_PEDESTAL        0   /* as Windows; the real pedestal is unmeasured */
+#define IR0861_SENSOR_PIXEL_ORDER_CCS 0   /* GRBG; a monochrome die still reports one */
 
 /* CCS pixel order -> angler Bayer enum (0 BGGR, 1 GBRG, 2 GRBG, 3 RGGB). */
 #define IR0861_BAYER_ORDER (IR0861_SENSOR_PIXEL_ORDER_CCS == 0 ? 2u : \

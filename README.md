@@ -18,6 +18,15 @@ is built from C against an independently specified angler ABI header, so the mis
 generated from LumiaFaceID's private profile. It also adds the three verified fixes as permanent
 kernel/DT patches and a same-length sensor-list patch (`ov4688` → `ir0861`).
 
+## Sensor info (after LumiaFaceID `6404ee0`): taken from the DCC, not the sensor
+
+The sensor's gain/pedestal/pixel-order/strobe-capability registers all read `0x0000`. Windows has
+the same problem and solves it in `cam_drv_SMIApp_read16`, which overrides reads with DCC block 5.
+That gives `gain = code / 56` (codes 56–448 = 1×–8×) and coarse margin 6, which are now in the plugin.
+The strobe capability is 0 with no override. Windows' sensor-strobe set-up therefore cannot run for
+the iris, so the IR emitter is not driven by a sensor STROBE pin. See
+[FINDINGS.md section 18](FINDINGS.md#18-sensor-info-reads-0-on-the-phone-windows-takes-it-from-dcc-block-5).
+
 ## Status (after LumiaFaceID `d19ac43`): iris CSI packets received
 
 With the three fixes found here (`camss_csi3phy_clk`, regulator load votes, combo lane MISC1 bit 1),
