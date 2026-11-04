@@ -6,6 +6,12 @@ Tooling: REA 6.8.0 `decompile-all` with Ghidra 12.1.4 (ARM Thumb, PE). 363 funct
 Everything below is static decompiler output, not observed execution. Function names come from the
 driver's own trace strings.
 
+**Update after commit `3cb4fad`:** the owner's phone tests ruled out the `0x44` lead (the register already
+reads `0x03`), the settle values, VC0, CSI-2 selection, the reset delay and NVM config entries. The new
+lead is in section 11: **Windows enables `camss_csi3phy_clk` for the iris, and in the recorded Linux runs
+that clock was disabled.** That would explain both the iris result and the front-camera-on-CSID3
+control. The text below this paragraph is kept as it was written.
+
 **Update after commit `e7e62a3` (front camera gets zero lane IRQs on CSID3):** the strongest lead is now
 the **CAMSS TOP select register `0xFDA00044`**, which Windows writes and the Linux kernel never touches
 (section 3, "Clock mux"). Suggested order:
@@ -307,6 +313,59 @@ compared, `0x16`–`0x18` is the supported range.
 - `qccamisp8994.sys` handles only VFE/CPP (image processing). It contains no CSID or CSIPHY setup.
 - PHY status bit names are still not recovered (section 9 gives the layout only).
 - Nothing was run on a phone.
+
+## 11. `camss_csi3phy_clk`: Windows enables it for the iris, Linux leaves it off
+
+**Phone results this responds to (LumiaFaceID `3cb4fad`):** `0xfda00044` was already `0x03` and
+`0x40` became `0x30` during the iris run, so the section 3 select bit was set. Settle `0x16`, 1–63, VC0,
+`0x0111=2`, the 10 ms reset wait and an NVM header without config entries all left the sensor frame
+counter and CSID3 packets at zero. The front-camera PHY status during preview was words 0–5 and 7 = 0,
+word 6 = `0x1`. CSID3's internal test generator does count packets, so CSID3 itself works.
+
+**Source:** the ACPI power resources in the Lumia DSDT
+([WOA-Project/Lumia950XLPkg `DSDT.asl`](https://github.com/WOA-Project/Lumia950XLPkg/blob/cfc68a4d19fc7e8645bff6d8fce7308ad8494a76/AcpiTables/8994/src/DSDT.asl)).
+In each camera device's D0 sequence, the CSI clocks it enables are:
+
+| ACPI device | Sensor route | CSI clocks in D0 |
+| --- | --- | --- |
+| `CAMS` (rear) | PHY0 → CSID0 | `camss_csi0_clk`, **`camss_csi0phy_clk`**, `camss_mclk0_clk` |
+| `CAMF` (front) | PHY2 lower → CSID2 | `camss_csi0_clk`, `camss_csi2_clk`, **`camss_csi2phy_clk`**, `camss_mclk2_clk` |
+| `CAMT` (iris) | PHY2 upper → CSID3 | `camss_csi0_clk`, `camss_csi2_clk`, `camss_csi3_clk`, **`camss_csi3phy_clk`**, `camss_mclk1_clk` |
+
+The `csiNphy` clock follows the **CSID** number, not the PHY number. The iris uses PHY2, but Windows
+enables `csi3phy`, not `csi2phy`. MSM8994 has three PHYs and four `csiNphy` clocks, which also fits
+per-CSID clocks. Mainline Linux agrees: its CSID resources list `csiN_phy` as a CSID clock
+(`camss.c`, `csid_res_8x96`: `"csi0", "csi0_phy", "csi0_pix", "csi0_rdi"`).
+
+The pinned downstream DT does it differently. Each `qcom,csiphy` node carries the clock with its own
+index (PHY2 → `clk_camss_csi2phy_clk`), and the `qcom,csid@fda08c00` node has no `csi3phy` clock at all.
+So Linux enables `csi2phy` whenever PHY2 is used, whichever CSID the CAMSS TOP mux selects. LumiaFaceID's
+`kernel/IRIS-CSID3-CONTROL.md` ("Clock state during a repeated front-camera control") recorded exactly
+this: `camss_csi2phy_clk` enabled, **`camss_csi3phy_clk` disabled**.
+
+**Interpretation (not verified):** setting the TOP mux to 3 points PHY2 at CSID3's PHY-interface clock.
+If that clock is gated, the PHY can still see lane activity (bit 2 on lanes 3/4, section 9), but nothing
+reaches CSID3. That fits all three observations: the iris gets zero packets, the front sensor also gets
+zero when routed to CSID3, and the internal test generator works because it bypasses the PHY interface.
+The normal front route matches the Windows pattern (CSID2 with `csi2phy` on), and it works.
+
+**Suggested one-shot:** keep everything as in the current `csi-trial 22` run, and additionally
+`clk_prepare_enable` `camss_csi3phy_clk` (its parent `csi3_clk_src` is already enabled at 240 MHz in the
+recorded runs) before PHY2 is configured. Disable it after the receiver is released. Read back with
+debugfs that it is enabled during the run. An even cheaper first check is the front camera routed to
+CSID3 with `csi3phy` enabled, since that sensor is known to transmit.
+
+**Secondary:** `CAMT` also enables `camss_csi2_clk` and `camss_csi0_clk`, which the iris path does not
+use directly. They may be ordering or shared-resource votes. Try them only if `csi3phy` alone does not
+change the packet count.
+
+**Also in the same DSDT:** `BOOST_BYPASS1_B` (4.0 V) is the first vote in `CAMT` D0 and the
+last one released in D3, so it brackets the sensor rails. No other camera or flash device votes it
+(the only other user is audio). Its role is still unproven, so it stays after the clock test.
+
+## 12. Not covered again here (update)
+
+Section 10 still applies. Section 11 is static ACPI/DT analysis. Nothing in it was run on a phone.
 
 Reproduce:
 

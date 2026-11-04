@@ -8,7 +8,19 @@ This repo does not contain a driver, a kernel patch or a working capture path. I
 decompiling the original Windows ARM camera drivers with [REA](https://github.com/morluto/rea) and
 Ghidra 12.1.4, plus a script that reproduces the decompilation from the public driver package.
 
-## Main lead
+## Main lead (updated after LumiaFaceID `3cb4fad`)
+
+Phone tests ruled out the `0xFDA00044` lead below: the select bit was already set. The new lead:
+
+> For the iris, Windows (ACPI `CAMT`) enables **`camss_csi3phy_clk`**. The clock follows the CSID number,
+> not the PHY number. The downstream Linux DT gives PHY2 only `camss_csi2phy_clk`, and the recorded
+> Linux runs show **`camss_csi3phy_clk` disabled**.
+
+That fits both the iris result and the front camera failing on CSID3, while CSID3's internal test
+generator works. Suggested one-shot: the current trial plus `camss_csi3phy_clk` enabled. Details are in
+[FINDINGS.md section 11](FINDINGS.md#11-camss_csi3phy_clk-windows-enables-it-for-the-iris-linux-leaves-it-off).
+
+### Earlier lead (ruled out on the phone)
 
 LumiaFaceID's commit `e7e62a3` showed that CSID3 records **no lane events** even with the working front
 sensor routed to it, while CSID2 works. Given that result:
@@ -20,8 +32,8 @@ sensor routed to it, while CSID2 works. Given that result:
 On Windows, CSID3 is also only ever fed through the PHY2 *upper* (combo) field. A front-camera test
 through the *lower* field therefore uses a route Windows never uses.
 
-The first suggested step only reads registers: read `0xfda00040` / `0xfda00044` during a working
-CSID2 stream and during the iris one-shot. Details and the exact field table are in
+This was checked on the phone: `0xfda00044` read `0x03` before and during the iris run. The original
+text and the exact field table remain in
 [FINDINGS.md](FINDINGS.md#clock-mux-platform-driver-qccamplatform8994sys-windows-writes-0xfda00044-linux-does-not).
 
 ## Other findings
