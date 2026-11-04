@@ -496,6 +496,50 @@ mode. Voltages stay the same, and it is what the Linux front camera already does
 
 If this does not change `0x0005`, `BOOST_BYPASS1_B` remains the last power difference from `CAMT`.
 
+### 13a. More detail from the same DSDT votes
+
+The 10-element LDO votes match Qualcomm's `PMICVREGVOTE` layout: name, type (1 = LDO), µV, µA,
+software enable, pin-control enable, **software power mode**, pin-control power mode, bypass,
+headroom. For `LDO17_A` and `LDO3_A`, the power-mode field is **1 in both the D0 and D3 votes**. In
+Qualcomm's LDO mode enum, 0 is current-based (IPEAK) and 1 is forced NPM (normal/high power). If that
+enum applies here, Windows does not only send a current, it also pins both LDOs to NPM. The enum
+values are from memory of Qualcomm's PMIC NPA interface, not from this DSDT, so treat this as
+supporting evidence.
+
+The front camera (`CAMF`) votes only `LDO17_A` and `LVS1_A`, with the same 2.8 V / 300 mA / mode 1 on
+L17. The iris additionally needs `SMPS3_A` (1.3 V) and **`LDO3_A` (1.2 V, 80 mA)**. So L3 is used only
+by the iris, and no working camera on Linux has ever run with L3 in HPM. The LumiaFaceID result line
+`rail_uv=1200000` is this L3 rail. Its voltage reads correctly, but that says nothing about its
+mode.
+
+Windows power-on order and delays (`DELAY` units as written in the DSDT): boost → 1 → L17 → 1 → LVS1 →
+1 → S3 → 1 → L3 → 1 → clocks including MCLK1 → GPIO14 (MCLK function) → 1 → GPIO102 (reset) high → 3.
+Power-off is the reverse, with 5 after the clocks and 10 after L17. The rail order matches
+LumiaFaceID's `rail_names`.
+
+### 13b. Upper-combo PHY configuration: no new difference
+
+The `iris-csi3phy-precount-01` readback shows the downstream combo setup as intended. PHY power is
+`0x31` (lane mask `0x18`), mode is `0x10` (combo), the lane 3 (clock) MISC1 is `0x4`, and the lane 4
+(data) MISC1 is `0x8`. This matches `msm_csiphy.c` for `qcom,csiphy-v3.1.1` (`is_3_1_20nm_hw`): "in
+combo mode the clock is always the 4th lane". Settle is `0x16` on both. The front control on CSID3
+proved the lower lanes only, but the upper configuration that Linux writes is what the driver
+intends.
+
+The eight PHY status words are all 0 **before** stream-on and only become `0x4` on words 3 and 4 (the
+iris lanes) plus `0x10` on word 6 **after** it. A working front stream leaves its lane words at 0. So
+something does happen on exactly the iris lanes when the sensor is told to stream, but it is not
+what a healthy link produces. A sensor whose TX starts but cannot keep running, for example because
+its supply is weak, would fit that.
+
+### 13c. Caveat on `0x0005`
+
+The iris reads `0x0005 = 0x00` **before** stream-on. The original driver's stop loop treats `0xFF`
+as the idle value (section 12). So this sensor's counter may not behave like the standard one, and
+"counter stays 0" is weaker evidence than it first looked. A cheap check: read `0x0005` once more
+after the sensor stop (`0x0100=0` plus one frame time). If it never shows `0xFF` on this sensor, do
+not rely on it, and use CSID3 packets as the only success criterion.
+
 ## 14. Not covered again here (update)
 
 Section 10 still applies. Sections 11–13 are static ACPI/DT/driver analysis. The section 11 result
