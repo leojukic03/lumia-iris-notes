@@ -4,9 +4,19 @@ Static reverse-engineering notes for the **Lumia 950 XL (cityman) Windows Hello 
 written to support [andrew-lE2A/LumiaFaceID](https://github.com/andrew-lE2A/LumiaFaceID), which brings
 the iris sensor up on LineageOS 23.2 / Android 16.
 
-This repo does not contain a driver, a kernel patch or a working capture path. It holds findings from
-decompiling the original Windows ARM camera drivers with [REA](https://github.com/morluto/rea) and
-Ghidra 12.1.4, plus a script that reproduces the decompilation from the public driver package.
+It holds findings from decompiling the original Windows ARM camera drivers with
+[REA](https://github.com/morluto/rea) and Ghidra 12.1.4, a script that reproduces the decompilation
+from the public driver package, and, in [`android/`](android/README.md), experimental pieces that
+make the iris a third Android camera. Those are a sensor plugin, kernel/DT patches and a
+sensor-list patch, and none of them has run on a phone yet.
+
+## Next step: iris as `camera@2` ([`android/`](android/README.md))
+
+The port's front-camera plugin (`camera-sensors/vs6955` in giannoccarol/android_device_msft_cityman)
+is built from C against an independently specified angler ABI header, so the missing Qualcomm
+`sensor_lib.h` is not needed. `android/` adds a matching `libmmcamera_ir0861` plugin. Its program is
+generated from LumiaFaceID's private profile. It also adds the three verified fixes as permanent
+kernel/DT patches and a same-length sensor-list patch (`ov4688` → `ir0861`).
 
 ## Status (after LumiaFaceID `d19ac43`): iris CSI packets received
 

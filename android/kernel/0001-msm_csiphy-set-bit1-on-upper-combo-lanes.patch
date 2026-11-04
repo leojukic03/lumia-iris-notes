@@ -1,0 +1,18 @@
+--- a/drivers/media/platform/msm/camera_v2/sensor/csiphy/msm_csiphy.c
++++ b/drivers/media/platform/msm/camera_v2/sensor/csiphy/msm_csiphy.c
+@@ -211,6 +211,15 @@
+ 					((csiphy_params->lane_mask &
+ 						0x18) == 0x18))
+ 					lane_val = 0x4;
++				/*
++				 * The original Lumia iris driver also sets bit 1
++				 * on both upper combo lanes (lane 3 = 0x6,
++				 * lane 4 = 0xa). Without it the upper pair
++				 * delivers no packets to the CSID.
++				 */
++				if (j >= 3 && ((csiphy_params->lane_mask &
++						0x18) == 0x18))
++					lane_val |= 0x2;
+ 			}
+ 			msm_camera_io_w(lane_val, csiphybase +
+ 				csiphy_dev->ctrl_reg->csiphy_reg.

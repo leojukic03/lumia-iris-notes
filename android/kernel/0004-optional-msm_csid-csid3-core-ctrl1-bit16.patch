@@ -1,0 +1,15 @@
+--- a/drivers/media/platform/msm/camera_v2/sensor/csid/msm_csid.c
++++ b/drivers/media/platform/msm/camera_v2/sensor/csid/msm_csid.c
+@@ -214,6 +214,12 @@
+ 		val = csid_params->phy_sel <<
+ 			csid_dev->ctrl_reg->csid_reg.csid_phy_sel_shift;
+ 		val |= 0xF;
++		/*
++		 * The original Lumia iris driver writes (phy << 17) | 0x1000f
++		 * to CSID3; the verified iris packet runs had bit 16 set.
++		 */
++		if (csid_dev->pdev->id == 3)
++			val |= BIT(16);
+ 		msm_camera_io_w(val, csidbase +
+ 		csid_dev->ctrl_reg->csid_reg.csid_core_ctrl_1_addr);
+ 	}

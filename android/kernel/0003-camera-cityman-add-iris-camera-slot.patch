@@ -1,0 +1,62 @@
+--- a/arch/arm64/boot/dts/mmo/common/camera-cityman.dtsi
++++ b/arch/arm64/boot/dts/mmo/common/camera-cityman.dtsi
+@@ -261,6 +261,59 @@
+ 			 <&clock_mmss clk_camss_mclk2_clk>;
+ 		clock-names = "cam_src_clk", "cam_clk";
+ 	};
++
++	/*
++	 * Iris: SMIA model 0x0861 (DSDT CAMT / QCOM2436), CCI master 0,
++	 * 8-bit slave 0x6c, CSIPHY2 upper combo lanes to CSID3, MCLK1 on
++	 * GPIO 14, reset GPIO 102, no standby. Rails and loads follow the
++	 * CAMT D0 votes. Needs the CSID3 csi3phy clock and the combo MISC1
++	 * fix. Opt-in: do not stream it together with camera@1, both use
++	 * CSIPHY2. Pins come from LumiaFaceID's iris-id integration patch.
++	 */
++	qcom,camera@2 {
++		cell-index = <2>;
++		compatible = "qcom,camera";
++		reg = <0x2>;
++		qcom,csiphy-sd-index = <2>;
++		qcom,csid-sd-index = <3>;
++		qcom,mount-angle = <90>;
++		cam_vana-supply = <&pm8994_l17>;
++		cam_vio-supply = <&pm8994_lvs1>;
++		cam_v_custom1-supply = <&pm8994_s3>;
++		cam_vdig-supply = <&pm8994_l3>;
++		qcom,cam-vreg-name = "cam_vana", "cam_vio", "cam_v_custom1",
++				     "cam_vdig";
++		qcom,cam-vreg-min-voltage = <2800000 0 1300000 1200000>;
++		qcom,cam-vreg-max-voltage = <2800000 0 1300000 1200000>;
++		qcom,cam-vreg-op-mode = <300000 0 300000 80000>;
++		qcom,cam-power-seq-type = "sensor_vreg", "sensor_vreg",
++					  "sensor_vreg", "sensor_vreg",
++					  "sensor_clk", "sensor_gpio";
++		qcom,cam-power-seq-val = "cam_vana", "cam_vio",
++					 "cam_v_custom1", "cam_vdig",
++					 "sensor_cam_mclk",
++					 "sensor_gpio_reset";
++		qcom,cam-power-seq-cfg-val = <1 1 1 1 9600000 1>;
++		qcom,cam-power-seq-delay = <1 1 1 1 1 10>;
++		qcom,gpio-no-mux = <0>;
++		pinctrl-names = "cam_default", "cam_suspend";
++		pinctrl-0 = <&cam_sensor_mclk1_active &cityman_iris_reset_active>;
++		pinctrl-1 = <&cam_sensor_mclk1_suspend &cityman_iris_reset_sleep>;
++		gpios = <&msm_gpio 14 0>,
++			<&msm_gpio 102 0>;
++		qcom,gpio-reset = <1>;
++		qcom,gpio-req-tbl-num = <0 1>;
++		qcom,gpio-req-tbl-flags = <1 0>;
++		qcom,gpio-req-tbl-label = "CAMIF_MCLK1",
++					  "CAM_RESET_IRIS";
++		qcom,sensor-position = <1>;
++		qcom,sensor-mode = <0>;
++		qcom,cci-master = <0>;
++		status = "disabled";
++		clocks = <&clock_mmss clk_mclk1_clk_src>,
++			 <&clock_mmss clk_camss_mclk1_clk>;
++		clock-names = "cam_src_clk", "cam_clk";
++	};
+ };
+ 
+ /*

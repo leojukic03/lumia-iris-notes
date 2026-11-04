@@ -1,0 +1,19 @@
+--- a/arch/arm/boot/dts/qcom/msm8994-camera.dtsi
++++ b/arch/arm/boot/dts/qcom/msm8994-camera.dtsi
+@@ -185,12 +185,13 @@
+ 			<&clock_mmss clk_camss_csi3_ahb_clk>,
+ 			<&clock_mmss clk_camss_csi3rdi_clk>,
+ 			<&clock_mmss clk_camss_csi3pix_clk>,
+-			<&clock_mmss clk_camss_ahb_clk>;
++			<&clock_mmss clk_camss_ahb_clk>,
++			<&clock_mmss clk_camss_csi3phy_clk>;
+ 		clock-names = "camss_top_ahb_clk",
+ 			"ispif_ahb_clk", "csi_clk", "csi_ahb_clk",
+ 			"csi_src_clk", "csi_rdi_clk",
+-			 "csi_pix_clk", "camss_ahb_clk";
+-		qcom,clock-rates = <0 0 240000000 0 0 0 0 0>;
++			 "csi_pix_clk", "camss_ahb_clk", "csi_phy_clk";
++		qcom,clock-rates = <0 0 240000000 0 0 0 0 0 0>;
+ 	};
+ 
+ 	qcom,ispif@fda0a000 {
