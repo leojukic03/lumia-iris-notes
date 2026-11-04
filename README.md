@@ -8,7 +8,14 @@ This repo does not contain a driver, a kernel patch or a working capture path. I
 decompiling the original Windows ARM camera drivers with [REA](https://github.com/morluto/rea) and
 Ghidra 12.1.4, plus a script that reproduces the decompilation from the public driver package.
 
-## Current lead (after LumiaFaceID `ac6db19`): combo lane MISC1 bit 1
+## Status (after LumiaFaceID `d19ac43`): iris CSI packets received
+
+With the three fixes found here (`camss_csi3phy_clk`, regulator load votes, combo lane MISC1 bit 1),
+CSID3 received **12,677 and 12,720 iris packets** in two runs, with zero ECC/CRC. The baseline on the
+same boot gave 0. The packet count fits about 11–12 full 1088-line frames. No image has been captured
+yet. See [FINDINGS.md section 14a](FINDINGS.md#14a-confirmed-on-the-phone-lumiafaceid-d19ac43).
+
+## Combo lane MISC1 bit 1 (confirmed)
 
 Regulator load votes put L17/L3/S3 into HPM, but the iris still delivers zero packets. The remaining
 gap is PHY2's upper combo lanes, which the front-camera control did not exercise:

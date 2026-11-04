@@ -602,6 +602,45 @@ lane 4 = `0x0A` (offsets `0x28 + 0x40·3 = 0xE8` and `0x28 + 0x40·4 = 0x128`). 
 is CSID3 packets > 0. Only if that alone does nothing, a second variant can also apply the Windows
 `CFG1/2/4/5` values to lanes 3/4.
 
+### 14a. Confirmed on the phone (LumiaFaceID `d19ac43`)
+
+With `csi3phy` and the regulator load votes kept on, the baseline gave 0 CSID3 packets. Writing
+lane 3 MISC1 = `0x06` and lane 4 MISC1 = `0x0A` gave **12,677 packets**, and the repeat gave **12,720**,
+both with zero ECC and CRC. The readbacks were `0x06` / `0x0A`. The CFG1/2/4/5 variant was not needed.
+
+What the numbers suggest (inference, not a measurement): one RAW10 frame of 1088 lines is about 1,090
+CSI packets (one long packet per line, plus frame start/end). 12,700 packets is therefore about
+11–12 full frames. At the configured 33.4 ms per frame (section 12), that is about 0.39 s of
+streaming, which matches the diagnostic's sampling window plus CCI overhead. So the packets look
+like complete frames at the programmed rate, not noise.
+
+Two side results:
+
+- PHY status words 3/4 = `0x4` and word 6 = `0x10` stay the same with packets flowing, so those bits
+  are not errors.
+- The sensor counter `0x0005` stayed `0x00` while packets arrived. On this sensor it does not count
+  frames (section 13c).
+
+**Making it permanent.** Instead of overriding the registers in the iris driver, the downstream combo
+branch in `msm_csiphy_lane_config()` (`is_3_1_20nm_hw` path) can set the bit itself. That matches
+`0x41dbb4`, which sets bit 1 on lanes 3 and 4 only in combo mode:
+
+```c
+if (csiphy_params->combo_mode == 1) {
+	if (curr_lane == 0 && ((csiphy_params->lane_mask & 0x18) == 0x18))
+		lane_val = 0x4;
+	/* Original driver: upper combo lanes carry bit 1 (lane 3 = 0x6, lane 4 = 0xA). */
+	if (j >= 3 && ((csiphy_params->lane_mask & 0x18) == 0x18))
+		lane_val |= 0x2;
+}
+```
+
+Non-combo setups are untouched, so the front and rear cameras keep their current values.
+
+**Next steps are now about getting an image, not about reception:** route CSID3 → ISPIF → VFE RDI
+into a buffer (RAW10, 1920×1088, 2400 bytes per line, data type `0x2b`, VC0) and look at one frame.
+Then IR illumination timing (section 5).
+
 ## 15. Not covered again here (update)
 
 Section 10 still applies. Sections 11–14 are static ACPI/DT/driver analysis. The results quoted at
