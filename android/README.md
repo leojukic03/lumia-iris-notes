@@ -32,6 +32,27 @@ the port's ABI header, and all of the header's ARM32 size/offset `_Static_assert
 
 ## Steps
 
+0. **Read-only sensor dump (with the existing iris diagnostic).** The original driver does not
+   hard-code gain, black level or pixel order. It reads them from the sensor at start-up
+   (`0x40f374`, `0x4107f8`). Read these once after the profile is programmed, then put the values
+   into the `IR0861_SENSOR_*` macros at the top of `sensor_lib_ir0861.c`:
+
+   | Register | Meaning | Macro |
+   | --- | --- | --- |
+   | `0x0080` (16) | analogue gain capability (0 = global) | for information |
+   | `0x0084` / `0x0086` / `0x0088` (16) | gain code min / max / step | `GAIN_CODE_MIN/MAX/STEP` |
+   | `0x008c` / `0x008e` / `0x0090` / `0x0092` (16, signed) | gain model m0 / c0 / m1 / c1 | `GAIN_M0/C0/M1/C1` |
+   | `0x1004` / `0x1006` (16) | coarse integration min / max margin | `COARSE_MARGIN` |
+   | `0x0008` (16) | data pedestal (black level) | `PEDESTAL` |
+   | `0x0006` (8), with `0x0101 = 0` | pixel order (CCS 0 GRBG, 1 RGGB, 2 BGGR, 3 GBRG) | `PIXEL_ORDER_CCS` |
+   | `0x11ca` (8) | monochrome capability | for information |
+   | `0x1a02` (8) | flash strobe capability, for the IR step | for information |
+
+   Gain follows the SMIA model the original driver uses: `gain = (m0·code + c0) / (m1·code + c1)`.
+   The Windows driver only patches it for model `0x022e`, not this one. The defaults
+   (`0, 512, -1, 512`, codes 0–448) are a common SMIA model and only placeholders. Orientation:
+   Windows writes `0x0101 = 0`, unless the OEM registry key `Rotation\FlipMirror` is 1, which gives
+   `3`. That registry value is not public.
 1. **Kernel:** apply 0001–0003 and set `qcom,camera@2` to `status = "ok"` for the test build. The
    front camera keeps working: 0001 only changes combo mode, and 0002 only adds a clock to CSID3.
 2. **Plugin:** copy `camera-sensors/ir0861/` into the device tree and build:
@@ -66,8 +87,7 @@ the port's ABI header, and all of the header's ARM32 size/offset `_Static_assert
   colour processing of what is probably a monochrome sensor.
 - **ISPIF select bits** (FINDINGS section 15). If the CSID counts packets but the VFE never reports
   SOF, read `0xfda00020/24/28/2c`.
-- **Placeholders** to replace once frames arrive: the gain formula (read the SMIA capability
-  registers `0x0080..0x008b`), black level (`0x0008`), mount angle, lens data and the Bayer order.
+- **Still placeholders after step 0:** mount angle (check on the first image), lens data and tuning.
 
 ## Licence and credits
 
