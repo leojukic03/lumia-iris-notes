@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Test tool only: not in PRODUCT_PACKAGES. Build with `m iris_capture` and push
+// out/target/product/<device>/system/bin/iris_capture to /data/local/tmp.
+cc_binary {
+    name: "iris_capture",
+    srcs: ["iris_capture.c"],
+    shared_libs: [
+        "libcamera2ndk",
+        "libmediandk",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}

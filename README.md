@@ -8,7 +8,8 @@ It holds findings from decompiling the original Windows ARM camera drivers with
 [REA](https://github.com/morluto/rea) and Ghidra 12.1.4, a script that reproduces the decompilation
 from the public driver package, and, in [`android/`](android/README.md), experimental pieces that
 make the iris a third Android camera. Those are a sensor plugin, kernel/DT patches and a
-sensor-list patch, and none of them has run on a phone yet.
+sensor-list patch, plus `iris_capture` to open camera ID 2. On the phone the plugin probes and the
+iris shows up as camera ID 2. No frame has been streamed through it yet.
 
 ## Next step: iris as `camera@2` ([`android/`](android/README.md))
 
