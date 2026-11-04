@@ -20,6 +20,11 @@ That fits both the iris result and the front camera failing on CSID3, while CSID
 generator works. Suggested one-shot: the current trial plus `camss_csi3phy_clk` enabled. Details are in
 [FINDINGS.md section 11](FINDINGS.md#11-camss_csi3phy_clk-windows-enables-it-for-the-iris-linux-leaves-it-off).
 
+That clock cannot explain why the **sensor's own** frame counter `0x0005` stays at 0. That points at a
+second, sensor-side problem. One read of `0x0005` before stream-on tells which case it is, and
+`BOOST_BYPASS1_B` is the remaining power difference. See
+[section 12](FINDINGS.md#12-the-sensors-own-frame-counter-a-second-sensor-side-problem).
+
 ### Earlier lead (ruled out on the phone)
 
 LumiaFaceID's commit `e7e62a3` showed that CSID3 records **no lane events** even with the working front

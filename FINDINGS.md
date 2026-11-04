@@ -349,6 +349,31 @@ reaches CSID3. That fits all three observations: the iris gets zero packets, the
 zero when routed to CSID3, and the internal test generator works because it bypasses the PHY interface.
 The normal front route matches the Windows pattern (CSID2 with `csi2phy` on), and it works.
 
+**Confirmed in the pinned kernel** (`giannoccarol/android_kernel_mmo_msm8994` @ `cc84cab9`):
+
+- `drivers/clk/qcom/clock-mmss-8994.c`: `camss_csi3phy_clk` (CBCR `0x31F4`) has parent
+  `csi3_clk_src`, and `camss_csi2phy_clk` (CBCR `0x3194`) has parent `csi2_clk_src`. So each `csiNphy`
+  branch is generated from CSID N's clock source.
+- `msm_csiphy.c` writes `csid_core` into the `csiphy_clk_mux` field (`<< 4` for combo upper lanes). The
+  mux picks which CSID's `csiNphy` clock drives the PHY. It does not enable that clock.
+- The PHY2 node only lists `clk_camss_csi2phy_clk` as `csi_phy_clk`, and the CSID3 node has no PHY
+  clock. Nothing in the tree enables `camss_csi3phy_clk`.
+
+A minimal DT change for a test build (CSID3 node `qcom,csid@fda08c00`, append as the 9th entry; the
+limit is `CSID_NUM_CLK_MAX = 16`, and `msm_csid` enables every listed clock in order):
+
+```dts
+clocks = <... existing 8 ...>, <&clock_mmss clk_camss_csi3phy_clk>;
+clock-names = <... existing 8 ...>, "csi_phy_clk";
+qcom,clock-rates = <0 0 240000000 0 0 0 0 0 0>;
+```
+
+Rate 0 means the driver does not set a rate, so the branch runs at its parent's 240 MHz. One caveat:
+`csid_clk_info[]` in `msm_csid.c` is a static array shared by all CSID instances. If another CSID probes
+after CSID3, its 8 entries overwrite the first 8 slots. Slot 9 keeps rate 0, which is harmless here.
+Doing the enable in the iris driver instead (`clk_get` + `clk_prepare_enable` around the run) avoids
+touching the shared camera stack.
+
 **Suggested one-shot:** keep everything as in the current `csi-trial 22` run, and additionally
 `clk_prepare_enable` `camss_csi3phy_clk` (its parent `csi3_clk_src` is already enabled at 240 MHz in the
 recorded runs) before PHY2 is configured. Disable it after the receiver is released. Read back with
@@ -363,9 +388,57 @@ change the packet count.
 last one released in D3, so it brackets the sensor rails. No other camera or flash device votes it
 (the only other user is audio). Its role is still unproven, so it stays after the clock test.
 
-## 12. Not covered again here (update)
+## 12. The sensor's own frame counter: a second, sensor-side problem
 
-Section 10 still applies. Section 11 is static ACPI/DT analysis. Nothing in it was run on a phone.
+Section 11 can explain why CSID3 counts nothing. It **cannot** explain why the sensor's frame counter
+(`0x0005`) stays at `0x00`. That counter is inside the sensor, and MIPI CSI-2 has no back channel, so
+a gated clock on the SoC side does not stop the sensor from counting frames.
+
+The original driver confirms what the register means. `cam_drv_SMIApp_pause` (`0x411a4c`) reads
+`0x0005` and logs it as "Last frame count". During its slow stop it polls `0x0005` and treats `0xFF` as
+"streaming stopped". So `0x0005` really is the frame counter here, and `0xFF` is its idle value.
+
+The expected rate is easy to compute from the readbacks. Frame length is `0x045c` = 1116 lines, line
+length is `0x0834` = 2100, and the pixel clock is 70.08 MHz (section 7). That gives 33.4 ms per frame.
+The diagnostic samples 16 × 20 ms = 320 ms, which is about 9 frames, but it saw 0 changes.
+
+Two readings:
+
+- `0x0005` was `0xFF` before stream-on and became `0x00` after. Then the sensor did enter streaming
+  (`0x0100` also reads back 1), but it never finished a frame. That points at the analog/PLL side of
+  the sensor, not at the receiver.
+- `0x0005` was already `0x00` before stream-on. Then the counter says nothing either way.
+
+The current snapshot only samples `0x0005` after `0x0100=1`. (The `0xff` in `stream_before` of
+`iris-csi-03` has `samples: 0`, so it looks like an initial value, not a read.) **One extra read of
+`0x0005` just before `0x0100=1` would separate the two cases.**
+
+If it is the first case, the remaining power difference from Windows is `BOOST_BYPASS1_B` (section 11):
+Windows votes it first in `CAMT` D0 and releases it last in D3, bracketing the sensor rails. The PLL
+values are not a suspect, since Windows writes the same DCC values.
+
+Checked and **not** a difference:
+
+- EXTCLK: Windows `cam_drv_SMIApp_on` (`0x40bf24`), Siiri branch, writes `0x0103=1`, waits 10 ms, and
+  writes `0x0136 = (ext×256+50)/100`, which is the same as Linux. `0x0130=0x099a` comes from the DCC mode
+  program on both sides. In the generic branch, the driver logs `0x0130/0x0132/0x0134` as supply
+  voltage hints ("Setting Vana voltage"), but the Siiri branch does not write them.
+- MCLK1 pin: the iris DT node selects `cam_sensor_mclk1_active` (GPIO14), the same pin as `CAMT`
+  (`TLMMGPIO 0x0E`, function 1).
+- GPIO106: in the DSDT it only appears in another device's (`SDFR`) GPIO list, not in `CAMT`.
+
+**Suggested order:**
+
+1. Front camera on CSID3 with `camss_csi3phy_clk` enabled. This tests section 11 alone, because that
+   sensor is known to transmit.
+2. Iris with `csi3phy`, plus one `0x0005` read before stream-on.
+3. If the counter goes `0xFF → 0x00` and stays there, then try a bounded one-shot with
+   `BOOST_BYPASS1_B`, following the `CAMT` order.
+
+## 13. Not covered again here (update)
+
+Section 10 still applies. Sections 11 and 12 are static ACPI/DT/driver analysis. Nothing in them was
+run on a phone.
 
 Reproduce:
 
