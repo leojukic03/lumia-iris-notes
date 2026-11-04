@@ -549,10 +549,63 @@ as the idle value (section 12). So this sensor's counter may not behave like the
 after the sensor stop (`0x0100=0` plus one frame time). If it never shows `0xFF` on this sensor, do
 not rely on it, and use CSID3 packets as the only success criterion.
 
-## 14. Not covered again here (update)
+## 14. Combo upper lanes: Windows sets bit 1 in lane MISC1, Linux does not
 
-Section 10 still applies. Sections 11–13 are static ACPI/DT/driver analysis. The section 11 result
-above comes from LumiaFaceID's own phone test.
+**Phone result this responds to (LumiaFaceID `ac6db19`):** the baseline really had L17, L3 and S3 in
+LPM (`mode=4`). With the load votes, all three reached HPM (`mode=2`), but CSID3 still counted zero
+packets. `0x0005` read `0x00` before stream-on and 40 ms after stop, so it is not a usable indicator
+(section 13c). Power mode is real but not sufficient.
+
+That leaves the path the front-camera control did not cover: **PHY2's upper combo lanes 3/4**.
+
+**Windows PHY programming.** The iris driver programs PHY2 directly in `0x41e914` (full init,
+reached from `0x41d928` with `param_2 == 1`). The per-lane `MISC1` value (PHY offset `0x28 + 0x40·n`)
+comes from `0x41dbb4(lane, combo)`. I checked that function in the disassembly as well, not only in
+the decompiler output. It builds `16·a + 8·b + 4·c + 2·d + e`:
+
+| Lane | Windows, non-combo | Linux, non-combo (4-lane) | **Windows, combo** | **Linux, combo (mask `0x18`)** |
+| --- | --- | --- | --- | --- |
+| 0 | `0x00` | `0x00` | `0x00` | not written |
+| 1 | `0x04` | `0x04` | `0x04` | not written |
+| 2 | `0x28` | `0x28` | `0x08` | not written |
+| 3 | `0x18` | `0x18` | **`0x06`** | **`0x04`** (readback `phy_clock_misc`) |
+| 4 | `0x08` | `0x08` | **`0x0A`** | **`0x08`** (readback `phy_data_misc`) |
+
+The Linux values are from `msm_csiphy_lane_config()` (`is_3_1_20nm_hw` path). In non-combo mode
+Linux and Windows agree on every lane, which shows the field mapping is right. **In combo mode
+Windows additionally sets bit 1 (`0x2`) on exactly the two upper lanes.** Linux never produces that
+bit: its combo branch only forces `0x4` on the first upper lane.
+
+**Interpretation (not verified):** bit 1 appears only on upper-combo lanes, so it most likely tells
+the lane that it belongs to the second (upper) receiver group with its own clock on lane 3. Without
+it, data lane 4 may still be tied to the lower clock lane 1, which is idle when only the iris runs.
+That would fit every result so far: the lower path works on CSID3 (416 frames), the upper path never
+delivers a packet, and the PHY latches status bits on exactly lanes 3/4 after stream-on.
+
+**Other per-lane differences** (same function, written for all five lanes in Windows; Linux values
+are what the front/rear cameras already use successfully):
+
+| PHY lane register | Windows | Linux |
+| --- | --- | --- |
+| `CFG1` (`+0x00`) | `0x00` | not written |
+| `CFG2` (`+0x04`) | `0x3f` | `0x10` |
+| `CFG3` (`+0x08`) | settle | settle |
+| `CFG4` (`+0x0c`) | `0xff` | not written |
+| `CFG5` (`+0x10`) | `0x22` | not written |
+| `TEST_IMP` (`+0x1c`) | `0x17` | `0x17` |
+| `GLBL_RESET` | `0x11` then `0x10` (combo) | `0x10` |
+| `GLBL_PWR_CFG` | lane bits \| 1 (= `0x31` for iris alone) | `0x31` |
+
+**Suggested one-shot:** keep the current `csi-trial 22` setup (with the `csi3phy` vote), and after
+`msm_csiphy_lane_config()` returns, before sensor stream-on, write PHY2 `MISC1` lane 3 = `0x06` and
+lane 4 = `0x0A` (offsets `0x28 + 0x40·3 = 0xE8` and `0x28 + 0x40·4 = 0x128`). Read them back. Success
+is CSID3 packets > 0. Only if that alone does nothing, a second variant can also apply the Windows
+`CFG1/2/4/5` values to lanes 3/4.
+
+## 15. Not covered again here (update)
+
+Section 10 still applies. Sections 11–14 are static ACPI/DT/driver analysis. The results quoted at
+the start of sections 13 and 14 come from LumiaFaceID's own phone tests.
 
 Reproduce:
 

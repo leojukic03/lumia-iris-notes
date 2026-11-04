@@ -8,7 +8,19 @@ This repo does not contain a driver, a kernel patch or a working capture path. I
 decompiling the original Windows ARM camera drivers with [REA](https://github.com/morluto/rea) and
 Ghidra 12.1.4, plus a script that reproduces the decompilation from the public driver package.
 
-## Current lead (after LumiaFaceID `3ea51c1`): regulator load
+## Current lead (after LumiaFaceID `ac6db19`): combo lane MISC1 bit 1
+
+Regulator load votes put L17/L3/S3 into HPM, but the iris still delivers zero packets. The remaining
+gap is PHY2's upper combo lanes, which the front-camera control did not exercise:
+
+> In combo mode, the original driver writes lane `MISC1` = **`0x06`** (lane 3, clock) and **`0x0A`**
+> (lane 4, data). Linux writes `0x04` and `0x08`. The difference is bit 1, set only on the upper
+> combo lanes. In non-combo mode, Linux and Windows agree on every lane.
+
+Suggested one-shot: after Linux lane config, write those two values and read them back. See
+[FINDINGS.md section 14](FINDINGS.md#14-combo-upper-lanes-windows-sets-bit-1-in-lane-misc1-linux-does-not).
+
+## Earlier lead (after LumiaFaceID `3ea51c1`): regulator load (tested: real, not sufficient)
 
 The `camss_csi3phy_clk` lead below was confirmed on the phone. With that gate added to CSID3, the
 working front camera routed to CSID3 went from 0 to 416 frames. The iris still sends nothing, and its
