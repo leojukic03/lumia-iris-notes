@@ -8,9 +8,23 @@ This repo does not contain a driver, a kernel patch or a working capture path. I
 decompiling the original Windows ARM camera drivers with [REA](https://github.com/morluto/rea) and
 Ghidra 12.1.4, plus a script that reproduces the decompilation from the public driver package.
 
-## Main lead (updated after LumiaFaceID `3cb4fad`)
+## Current lead (after LumiaFaceID `3ea51c1`): regulator load
 
-Phone tests ruled out the `0xFDA00044` lead below: the select bit was already set. The new lead:
+The `camss_csi3phy_clk` lead below was confirmed on the phone. With that gate added to CSID3, the
+working front camera routed to CSID3 went from 0 to 416 frames. The iris still sends nothing, and its
+own frame counter `0x0005` never moves, so the remaining problem is on the sensor side.
+
+> Windows votes **300 mA on L17 (vana)** and **80 mA on L3 (vdig)** for the iris. The iris diagnostic
+> only calls `regulator_enable()`, with no load. With `qcom,hpm-min-load = 10 mA`, the RPM keeps those
+> LDOs in **low-power mode**. The Linux front camera sets 300 mA on the same L17.
+
+That fits a sensor that answers CCI and accepts `0x0100=1` but never finishes a frame. The fix to try
+is `regulator_set_optimum_mode()` with the Windows values. See
+[FINDINGS.md section 13](FINDINGS.md#13-result-of-section-11-and-the-next-lead-regulator-load-ldo-hpm-vs-lpm).
+
+## Confirmed lead (after LumiaFaceID `3cb4fad`)
+
+Phone tests ruled out the `0xFDA00044` lead below: the select bit was already set. The next lead:
 
 > For the iris, Windows (ACPI `CAMT`) enables **`camss_csi3phy_clk`**. The clock follows the CSID number,
 > not the PHY number. The downstream Linux DT gives PHY2 only `camss_csi2phy_clk`, and the recorded

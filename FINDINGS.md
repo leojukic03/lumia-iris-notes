@@ -435,10 +435,71 @@ Checked and **not** a difference:
 3. If the counter goes `0xFF → 0x00` and stays there, then try a bounded one-shot with
    `BOOST_BYPASS1_B`, following the `CAMT` order.
 
-## 13. Not covered again here (update)
+## 13. Result of section 11, and the next lead: regulator load (LDO HPM vs LPM)
 
-Section 10 still applies. Sections 11 and 12 are static ACPI/DT/driver analysis. Nothing in them was
-run on a phone.
+**Phone result (LumiaFaceID `3ea51c1`):** with `camss_csi3phy_clk` added to the CSID3 clock list, the
+working front camera routed to CSID3 delivered **416 frames**. CSID3 counted 1,094,240 packets with no
+ECC/CRC errors. Earlier, without that gate, the same control produced zero. The receiver-side gap from
+section 11 is therefore real and closed. The iris on the same boot still produced zero packets. Its
+`0x0005` already read `0x00` before stream-on and never changed. `csi2_clk`/`csi0_clk` votes changed
+nothing. That leaves the sensor side (section 12).
+
+**New lead: the iris driver never sets a regulator load.** The Windows `CAMT` D0 votes include a
+current for each sensor rail (DSDT `PMICVREGVOTE`, voltage in µV then current in µA):
+
+| Rail | Windows voltage | Windows current | LumiaFaceID iris driver |
+| --- | --- | --- | --- |
+| `LDO17_A` (vana) | 2.8 V | **300 mA** (`0x493E0`) | `regulator_enable` only, no load |
+| `LVS1_A` (vio) | 1.8 V | 300 mA | switch, no mode |
+| `SMPS3_A` (core) | 1.3 V | 300 mA | no load |
+| `LDO3_A` (vdig) | 1.2 V | **80 mA** (`0x13880`) | no load |
+
+In the pinned kernel (`arch/arm/boot/dts/qcom/msm-pm8994-rpm-regulator.dtsi`), `rpm-regulator-ldoa17`
+and `ldoa3` have `qcom,hpm-min-load = <10000>`, and `smpa3` has `<100000>`. The RPM-SMD regulator only
+asks for high-power mode when the summed consumer load reaches that threshold. A consumer that only
+calls `regulator_enable()` adds 0 µA, so the LDO stays in low-power mode (LPM). That mode is meant for
+a few mA.
+
+The Linux front camera shows this rail needs HPM. `cityman.dtsi` gives the front sensor
+`cam_vana-supply = <&pm8994_l17>` with `qcom,cam-vreg-op-mode = <300000 0>`, and `msm_camera_config_vreg`
+applies it with `regulator_set_optimum_mode()`. During the iris trials the camera services are
+stopped, so no other client is holding L17 in HPM.
+
+**Why this fits the symptoms:** in LPM a sensor can still answer CCI and accept register writes, which
+all draw very little current, and the voltage reads correctly at no load. When it starts streaming,
+the pixel array, ADCs and PLL draw tens of mA. On an LDO in LPM, that can make the analog part fail,
+and the sensor never finishes a frame. This matches what was seen: model ID OK, every readback OK,
+`0x0100` reads 1, but `0x0005` stays at `0x00`.
+
+**Cheap read-only check:** during an iris trial, with camera services stopped, read
+`/sys/kernel/debug/regulator/pm8994_l17/` (`mode`, `optimum_mode` or the consumer load list, whichever
+this 3.10 tree provides). Do the same for `pm8994_l3`. In Linux, `REGULATOR_MODE_NORMAL` = 2 (HPM) and
+`IDLE` = 4 (LPM).
+
+**Suggested change** (iris driver, around the existing `regulator_enable()` / `regulator_disable()`):
+
+```c
+static const int rail_load_ua[IRIS_RAILS] = { 300000, 0, 300000, 80000 }; /* CAMT D0 votes */
+
+/* before regulator_enable(iris->rails[i]) */
+if (rail_load_ua[i])
+	regulator_set_optimum_mode(iris->rails[i], rail_load_ua[i]);
+
+/* after regulator_disable(iris->rails[i]) */
+if (rail_load_ua[i])
+	regulator_set_optimum_mode(iris->rails[i], 0);
+```
+
+The order matches `rail_names` (vana, vio, core, vdig). `regulator_set_optimum_mode()` returns the
+selected mode or a negative error, so it is worth logging. This only changes the regulator's power
+mode. Voltages stay the same, and it is what the Linux front camera already does on L17.
+
+If this does not change `0x0005`, `BOOST_BYPASS1_B` remains the last power difference from `CAMT`.
+
+## 14. Not covered again here (update)
+
+Section 10 still applies. Sections 11–13 are static ACPI/DT/driver analysis. The section 11 result
+above comes from LumiaFaceID's own phone test.
 
 Reproduce:
 
