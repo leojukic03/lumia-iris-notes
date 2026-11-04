@@ -699,7 +699,69 @@ use them too:
 3. Iris supplies: load votes L17 300 mA, S3 300 mA, L3 80 mA (section 13). In a standard
    `msm_sensor` DT node, use `qcom,cam-vreg-op-mode`.
 
-## 16. Not covered again here (update)
+## 16. IR illumination: how Windows times it, and a staged plan for Linux
+
+**Windows lets the sensor time the IR pulse.** The iris driver has `cam_drv_SMIApp_set_flash_strobe`
+(`0x41452c`, "Flash strobe readout sync", "Flash strobe triggering delayed to next FSC"). It programs
+the sensor's own flash-strobe output with the standard CCS/SMIA++ registers. The names below are from
+mainline `drivers/media/i2c/ccs/ccs-regs.h`:
+
+| Register | CCS name | What Windows writes |
+| --- | --- | --- |
+| `0x0c12` | `FLASH_STROBE_ADJUSTMENT` | Prescaler `d`, the smallest power of two (1…128, else `0xff`) for which `65535 · d / EXTCLK` covers the requested times |
+| `0x0c14` | `FLASH_STROBE_START_POINT` | Start delay |
+| `0x0c16` | `TFLASH_STROBE_DELAY_RS_CTRL` | 0 (non-zero only in an "async" case for other module IDs) |
+| `0x0c18` | `TFLASH_STROBE_WIDTH_HIGH_RS_CTRL` | Pulse width, in units of `d / EXTCLK` (`width_us · 9.6 / d` at 9.6 MHz) |
+| `0x0c1a` | `FLASH_MODE_RS` | Flags: bit 2 = readout sync, bit 5 = modulation / second pulse, bit 0 = multi-strobe |
+| `0x0c1b` | `FLASH_TRIGGER_RS` | 1 = trigger (Windows resets with `0x0c1a = 3`, `0x0c1b = 0` first) |
+| `0x0c26` / `0x0c28` / `0x0c2a` | (not in mainline) | Second pulse width / low time / count |
+
+The driver also logs the sensor's strobe capabilities ("Strobe time min/max/step", "Strobes per
+frame", single/multiple). Those come from the capability block, starting at `0x1a02`
+(`FLASH_MODE_CAPABILITY`).
+
+The LED side is the PMIC flash block (`qccamflashtertiary8994.sys`, a WhiteLEDFlashDriver with a
+`pmic.c` backend). It has an explicit "Unsupported strobe configuration for flash! Flash blocked."
+check. `CAMT` has no strobe GPIO in ACPI (only GPIO 14 and 102), and `FLHT` (the tertiary flash, PMI8994
+flash interrupts) depends on `CAMT`. **Inference:** the sensor's STROBE pin goes straight to the
+PMI8994 flash hardware-strobe input, so each IR pulse is timed in hardware to the sensor's exposure.
+`CameraAuthentication.dll` sets the pulse length per frame (`FlashCtrlPulseUs`, `UseFlashOutOfFrame`)
+from configuration, not from constants.
+
+This also explains the 0.36 ms exposure in the DCC (section 15): a short, strong pulse inside a
+short exposure swamps ambient light. That is why Windows Hello images look evenly lit.
+
+**Windows guard rails** (section 5, units not established, not validated eye-safety limits):
+
+- Assist (continuous) IR power is allowed only at 13 / 20 / 30 / 100 %.
+- Pulse is at most 80000 (modes 1/2) or 40000 (mode 3), probably µs.
+- Per-LED request < 25 and total < 49.
+- A heat-load cooldown starts above 2000 ms accumulated on-time.
+
+**Linux side (pinned `leds-qpnp-flash.c`).** LumiaFaceID found that `led:torch_0` is the front IR
+emitter: brightness 14 (code 1) gave a faint red glow. The driver has a per-LED sysfs `strobe`
+attribute (0 = software, 1 = hardware), which sets `FLASH_LED_STROBE_TYPE_HW` (`0x40`) in
+`STROBE_CTRL` (`base + 0x47`). Caution: in this driver `0x40` is also `FLASH_LED1_TRIGGER`. Check
+the PMI8994 strobe-control bit layout before relying on that attribute.
+
+**Staged plan:**
+
+1. **First image, continuous IR (no new code).** Hold `torch_0` at a low brightness only for the
+   seconds a capture takes, then off. Stay well under 2 s per burst, which is the Windows cooldown
+   threshold. Use the 30 ms exposure from the plugin. Do not look into the emitter, and keep the
+   subject a hand or an object, not an eye, until the current is understood.
+2. **Read-only check that the sensor has a strobe output.** Read `0x1a02` (and the following
+   capability bytes) once. A non-zero `FLASH_MODE_CAPABILITY` confirms the strobe block that Windows
+   uses.
+3. **Windows-like pulse.** Program the sensor strobe as in the table: short exposure (for example
+   12 lines ≈ 0.36 ms), pulse width ≈ the exposure, readout sync. Put the PMIC LED into
+   hardware-strobe mode at the lowest current. If the emitter pulses only while streaming, the
+   STROBE → PMIC routing is confirmed. Only then raise the current, inside the Windows limits.
+4. **Camera stack.** After that, wire it to the daemon. The plugin's `is_flash_supported` and a
+   flash library like the port's `hill-flash` are the place for it, or a small HAL-side controller
+   that sets the strobe per frame like `CameraAuthentication.dll`.
+
+## 17. Not covered again here (update)
 
 Section 10 still applies. Sections 11–14 are static ACPI/DT/driver analysis. The results quoted at
 the start of sections 13 and 14 come from LumiaFaceID's own phone tests.
