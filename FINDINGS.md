@@ -1073,3 +1073,34 @@ is a guess. `FocusDistance` 25 is presumably centimetres; also a guess.
 
 **Not established.** The sensor frame size and cropping that Windows hands the engine (the `Viewport…` values of section 22 are not 640×480 or larger, so they are
 not the engine frame), how raw 10-bit data becomes the 8-bit frame, the matcher's score scale, template format, and the liveness logic.
+
+## 24. How the IR settings travel from the 3A engine to the sensor driver (`CameraAuthentication.dll`)
+
+From the RM-1085 image (section 22), same DLL family as the WOA `CameraAuthentication.dll` that LumiaFaceID listed. Addresses are for the image copy
+(SHA-256 `3f819777…9e95`).
+
+**The chain (code read, linkage between the last two hops inferred).**
+
+1. `Icaros.dll`'s 3A engine produces per-frame results in a key/value "stash". `CFrameHandler::FillVideoResultsFromStash` (`0x1000b6dc`) reads these keys:
+   `ET`, `AG`, `DGSensor`, `Aperture`, `UseNDFilter`, `UseOIS`, `FPSOverride`, `UseMechanicalShutter`, **`UseFlashOutOfFrame`**, **`FlashState`**, **`FlashPower`**,
+   **`FlashCtrlPulseUs`**, **`UseHighPowerMode`**, **`PreFlashIndex`**, `IsAECConverged`. They fill a 0x88-byte structure.
+2. That structure goes out as a block named `LumiaVideo3aResults` (0xb4 bytes with a 0x2c-byte header carrying a 0x20-byte name), inside a packet named
+   `LumiaVideoConfigUpdate` (0xe0 bytes), with `DeviceIoControl` code **`0x232a43`** on the camera device handle the DLL holds (`SetInitialVideoConfigToSensor`, `0x100081c8`).
+3. The sensor driver then receives these values as its AEC result. Section 21's `0x405e80` shows the same ideas on the receiving end (`UseFlashOutOfFrame` ↔
+   `OF_FLASH`, `UseHighPowerMode` ↔ `HP_FLASH`, `FlashCtrlPulseUs` ↔ the pulse time). That mapping is a reading, and no code was followed from the IOCTL to the driver.
+
+**Start-up values.** `SetInitialVideoConfigToSensor` sends digital gain `0x100` (1.0 in 8.8 fixed point), `FlashPower` 100, flash state 0, pulse length 0, high-power mode off, out-of-frame
+off and AEC-converged off. So the first frames go out with the emitter off, and `FlashPower` 100 is a percentage in the same sense as the 13/20/30/100 power levels of section 5 (a
+reading, not a check).
+
+**There are several lighting modes, one of them continuous.** The DLL's frame log prints the mode by name: **`None`, `Pulsing`, `ContinuousLED`** (and an `AntiSpoof`
+label next to them). The number-to-name order is not decoded. The mode comes from two integer registry values that the image's hive does not set, so the code default
+applies: `Sensor\PulsingMode` (read by `IrisSensorAdapter`) and `Engine\IdentPulsingMode` (read by `DeltaIrisEngineAdapter`). The engine adapter logs per-frame
+`ambient` and `pulsing` flags, and the frame's embedded data carries `PulseFlashFired`. That points to frames with and without IR being told apart.
+Whether Windows really alternates ambient and pulsed frames was not established.
+
+**Image format details.** The DLL sets `Image` details of `BayerOrder`, `BitDepth`, `Height`, `Width` and `Stride` (`SetImageFormatDetails`), so what comes from the camera is a Bayer-ordered
+raw frame with its bit depth. How it becomes the 8-bit grey frame of section 23 happens in the ARC/Icaros path and was not traced.
+
+**What it means for LumiaFaceID.** A `ContinuousLED` mode is part of Windows' own design, so steady `torch_0` at a low level is a legitimate first mode, not only a shortcut. The 3A
+engine, not the camera driver, decides when and how long the IR pulses (`FlashCtrlPulseUs`), from the frame statistics and the eye region (`EyeROI`, `IrisPct_P99/P95/P90`).
