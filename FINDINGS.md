@@ -1234,3 +1234,38 @@ register offsets therefore still need a different source (a CCI hardware documen
 **On the new `enrollment demo` (`android/iris-camera-probe/demo-on-phone.sh`).** The script prompts the user to enroll with "IR-assisted samples", which means the iris emitter is pulsed toward a person. The same repository's notes say never to point the emitter at people or eyes, and that
 the minimum code is "not eye-safety validation". Those two statements do not fit together. The emitter level used is the minimum (`torch_0` brightness 14, hardware code 1) for roughly 0.2 s per frame, and Windows' own default levels are unknown in comparable units
 (section 5 of the notes lists codes 10–23 with unknown units), so the actual margin cannot be judged from either side. The demo also forwards the helper's port to the host (`adb forward tcp:18761`), so anything on the host's loopback can request a pulse while the demo runs.
+
+## 28. How strong Windows drives the iris IR emitter (`qccamflashtertiary8994.sys` → `qcpmic8994.sys`)
+
+Sources: the public tertiary flash driver (SHA-256 `58cf8c49…c1c5`, byte-identical in the RM-1085 image) and the image's PMIC driver `Windows\System32\Drivers\qcpmic8994.sys` (SHA-256 `8eb9e72c…7cde`). Read with
+Ghidra through REA, and with Capstone where Ghidra had not created a function.
+
+**The power levels become PMI8994 flash-current codes.** `tff_ir1_assist_current_cfg` (`0x403b8c`) accepts only LED ID 7 and maps power **13 % → 10, 20 % → 15, 30 % → 23, 100 % → 22** (disassembly: `cmp r4,#0xd … movs r0,#0xa`,
+`#0x14 → #0xf`, `#0x1e → #0x17`, `#0x64 → #0x16`). The order is odd (30 % gets a higher code than 100 %) but that is what the code does. The callers pass the code as the third word of a
+`PM_FLASHLED_CONFIG_LED_PARAM` request (`0x403f28`: `{PMIC 1, LED mask, current, 0, 0, flag}`, LED mask 1 for the assist path at `0x403ff6`). At start-up the driver also sets LED mask 1 to 10 and LED mask 2 to 11.
+
+**What the PMIC driver does with it.** `HandlePmicFlashLedRequest` (`PmicFlashLed.c`) dispatches `CONFIG_LED_PARAM` through the PMI8994 ops table (`0x42d724`, slot `+0xc` = `0x41a6b8`). That function checks
+`LED mask ≤ 3`, **first value ≤ 0x4F**, **second value ≤ 0xF**, then two one-bit flags, and writes, per LED in the mask, the first value to one register and the second to another (`bl 0x412fb4`, the SPMI write).
+The limits 0x4F and 0xF are the PMI8994 **flash** and **torch** current fields (the Linux `leds-qpnp-flash` driver uses `FLASH_MAX_LEVEL 0x4F` and `TORCH_MAX_LEVEL 0x0F`). The flash driver puts the assist code in the first value and 0 in the
+second. **Windows drives the iris emitter in flash mode, not torch mode.** Codes 22 and 23 could not even be torch codes, which stop at 15.
+
+**In milliamps (estimate).** Two scales give nearly the same answer:
+
+| Code | Power level | Linux scale (`code × 1000 / 79`) | `(code + 1) × 12.5` |
+| --- | --- | --- | --- |
+| 10 | 13 % (and the start-up value) | 127 mA | 138 mA |
+| 15 | 20 % | 190 mA | 200 mA |
+| 23 | 30 % | 291 mA | 300 mA |
+| 22 | 100 % | 278 mA | 288 mA |
+
+The first column is how this Linux kernel itself programs the same register for `flash_0`. The second is the common "12.5 mA per step" reading of the register. They differ by about 10 mA. The unit is still not taken
+from a PMI8994 document, so this is an estimate with that 10 mA spread. Section 24's `SetInitialVideoConfigToSensor` starts with `FlashPower` 100. If that is the same percentage as these levels (not traced), Windows
+starts at code 22, about 280 mA.
+
+**What it means for Android.** LumiaFaceID's test used `torch_0` brightness 14, which this kernel programs as torch code 1, about 13 mA (25 mA on the other scale). That is **roughly 10 to 20 times below** Windows' lowest
+assist level, and in a different mode. Windows also limits pulses (section 5: at most 80,000 or 40,000, probably µs, a cooldown above 2 s accumulated on-time). So Windows uses short pulses of about 130–290 mA. This tells
+what Windows does. It does **not** show that any level is eye-safe on this phone, and copying Windows' current into a continuous torch would be a very different exposure from Windows' short pulses.
+
+**Measuring the right level without knowing the optics (for LumiaFaceID).** Use the iris camera itself as the meter. Fixed exposure 20 ms and ISO 250 (Windows' start values, section 22), a diffuse target at about 25 cm
+(Engine `FocusDistance` 25), no person in front of the emitter. Start at `torch_0` 14 and step up slowly, one short pulse per step, recording mean luma. The lowest level that reaches a mean of about 70 (Windows'
+`ExposureTargetAverage`) is the level that matches Windows' design point for that distance. Stop long before Windows' own currents unless a pulse-limited path exists.
