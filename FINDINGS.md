@@ -701,13 +701,11 @@ use them too:
 
 ## 16. IR illumination: how Windows times it, and a staged plan for Linux
 
-> **Update (sections 18 and 21, corrected):** on the phone `0x1a02` reads 0 and DCC block 5 has no
-> record for it, so Windows' own strobe set-up (`0x41452c`) would reject every request. That does
-> **not** show that the sensor has no strobe: every capability register reads 0 on this sensor,
-> including the gain ones for a feature that demonstrably works. And section 21 shows that the request
-> the flash path builds has exactly the layout `0x41452c` takes as input. So the sensor-strobe route
-> below is **neither confirmed nor ruled out**. Step 2 of the plan is done (all zero, which settles
-> nothing). Step 3 is an open experiment, not dropped (see its note).
+> **Update (sections 18 and 21, final):** the sensor-strobe register route below is probably not how
+> Windows lights the iris. With capability 0, Windows' own strobe set-up would reject the request, and
+> the driver then arms a CCI hardware sequence that exists only for sensor model `0x861`. The
+> STROBE → PMIC wiring guess below is unlikely. Step 2 is done (all capability registers read 0).
+> Step 3 would be an experiment, with bounded current only, and is not expected to work.
 
 **Windows lets the sensor time the IR pulse.** The iris driver has `cam_drv_SMIApp_set_flash_strobe`
 (`0x41452c`, "Flash strobe readout sync", "Flash strobe triggering delayed to next FSC"). It programs
@@ -761,7 +759,7 @@ the PMI8994 strobe-control bit layout before relying on that attribute.
 2. **Read-only check that the sensor has a strobe output.** Done in LumiaFaceID `6404ee0`:
    `0x1a00`–`0x1a0f` all read 0. Every capability register reads 0 on this sensor, so this neither
    proves nor excludes a strobe output (section 18).
-3. **(Open, see sections 18 and 21; only with a bounded current.) Windows-like pulse.** Program the sensor strobe as in the table: short exposure (for example
+3. **(Probably a dead end, see section 21.) Windows-like pulse.** Program the sensor strobe as in the table: short exposure (for example
    12 lines ≈ 0.36 ms), pulse width ≈ the exposure, readout sync. Put the PMIC LED into
    hardware-strobe mode at the lowest current. If the emitter pulses only while streaming, the
    STROBE → PMIC routing is confirmed. Only then raise the current, inside the Windows limits.
@@ -817,18 +815,16 @@ order) and `0x11ca` (monochrome) have no record, so Windows gets the sensor's 0:
 pedestal 0, CCS order 0 (GRBG). The plugin now uses these values. The sensor's real pedestal is still
 unmeasured. It only matters for black-level subtraction.
 
-**What this means for the IR step (section 16), corrected.** `0x40ff58` reads the flash capability
-`0x1a02` through the same override path: bit 0 sets `+0x11c = 1`, bit 1 sets `+0x11c = 2`. With 0,
-`+0x11c` stays 0 and the pulse limits `+0x110`/`+0x114`/`+0x118` are cleared. The strobe set-up
-`0x41452c` returns error 1 when its mode (one byte of its request) is above `+0x11c`, and all its
-`0x0c12`–`0x0c1b` writes sit inside `if (no error)`. So **if** the iris is armed through `0x41452c`
-with capability 0 and no block-5 record, Windows' own function writes no strobe registers.
+**What this means for the IR step (section 16).** `0x40ff58` reads the flash capability `0x1a02`
+through the same override path: bit 0 sets `+0x11c = 1`, bit 1 sets `+0x11c = 2`. With 0, `+0x11c`
+stays 0 and the pulse limits `+0x110`/`+0x114`/`+0x118` are cleared. The strobe set-up `0x41452c`
+returns an error when its mode (a byte of the request) is above `+0x11c`, and all its
+`0x0c12`–`0x0c1b` writes sit inside `if (no error)`.
 
-What that does **not** show: the capability registers all read 0 on this sensor, including those for
-gain, which works (block 5 supplies the numbers, section 18 above). A zero capability is therefore no
-evidence that the sensor has no strobe pin or no working `0x0c12`–`0x0c1b` registers. It only shows
-that Windows' generic code would refuse to use them without an override. How Windows lights the
-iris, through the sensor strobe or by another route, is **not established** (section 21).
+A zero capability on its own does not show that the sensor has no strobe: every capability register
+reads 0 on this sensor, including the gain ones for a feature that works. What makes the sensor strobe
+unlikely for the iris is section 21: with these limits the driver takes a CCI hardware path instead,
+and that path is created only for model `0x861`.
 
 ## 19. First frames through the standard Android stack (LumiaFaceID `83e40ed`)
 
@@ -907,58 +903,63 @@ Camera2 flash controls cannot reach the iris. It also finds that wiring `torch0_
 the PMIC's 120 mA operating current (not the 14 mA sysfs level) on the iris, and that `msm_flash`'s
 watchdog does not cover `CFG_FLASH_LOW`. Those are reasons not to enable the generic torch route.
 
-## 21. How the iris driver turns an AEC result into a flash request (partial)
+## 21. How the iris driver arms the IR pulse: a CCI hardware sequence, not the sensor strobe
 
-This follows section 16/18 into the per-frame path. Addresses are in `qccamsensor_tertiarySMIApp8994.sys`
-(SHA-256 `0ea99897…78e5`).
+Addresses are in `qccamsensor_tertiarySMIApp8994.sys` (SHA-256 `0ea99897…78e5`). Read with Ghidra 12.1.4
+through REA, plus the decompiled functions of section 5. An earlier version of this section, and parts of
+sections 16 and 18, were wrong or too sure. This version replaces them.
 
-**Established**
+**Established from the code**
 
-- `0x405e80` is the per-frame AEC-result handler. The AEC result carries a flash state, and the
-  handler maps it to a mode and logs it: **1 = `LP_FLASH`, 2 = `HP_FLASH`, 3 = `OF_FLASH`** (the
-  log strings at `0x40631c`, `0x406324`, `0x40632c`). Mode 3 is chosen from one byte of the result,
-  mode 2 from a second flag, mode 1 otherwise. `OF` is most likely "out of frame", matching
-  `UseFlashOutOfFrame` in `CameraAuthentication.dll`. That expansion is an inference.
-  These are the same modes 1/2/3 whose pulse length the flash driver clamps (section 5: 80000 for
-  1/2, 40000 for 3).
-- When a flash device handle exists, `0x405e80` calls `0x40aa20`, which builds a request
-  `{flag, delay, time}` (the flag is 1 for `OF`, else 0). What goes into it depends on the mode:
-  - `OF` (flag 1): delay from a per-sensor table, time = the requested pulse length from the AEC
-    result. No range check.
-  - `HP`: time = the requested pulse length, delay from the same table, then checked against the
-    flash device's min/max.
-  - `LP`: time computed from frame timing (scaled ×10, plus the exposure start time), delay 0, then
-    range-checked.
-  So only `LP` derives its time from exposure timing. An earlier version of this section said that for
-  all modes. That was wrong.
-- **That request has exactly the layout `0x41452c` reads.** `0x40aa20` builds a wrapper `{ptr, byte 1,
-  byte 1, 0}` around the three words. `0x41452c` takes the pointer, reads delay at `+4` and time at `+8`,
-  takes the mode count from the byte at wrapper `+4` (1), and for `OF` (inner word 0 == 1) sets bit 2
-  (readout sync) of `FLASH_MODE_RS`. So the flash-device path very probably ends in the sensor's
-  strobe registers, with time as the pulse width and delay as the start point. This is a match of
-  four field positions, not a trace through the callback that links them.
-- If no flash device handle exists, `0x405e80` calls `0x40afa0` (a "CCI HW" sequence, `0x40b134`)
-  when a CCI flag is set.
-- The sensor-strobe trigger `0x0c1b = 1` written by `0x40d324` (frame event 4) is the second half of
-  the sensor-strobe path from section 16. The flag it tests is the same word that `0x41452c` sets
-  (`0x831f60`, written as `piVar3[0xb]` there and read as `piVar4[0x17]` here). So that trigger only
-  fires after `0x41452c` has armed it. So the trigger and the set-up are one mechanism, and with
-  capability 0 Windows' own set-up would reject the request before it is armed (section 18).
+- `0x405e80` is the per-frame AEC-result handler. It maps the result's flash state to a mode and logs
+  it: **1 = `LP_FLASH`, 2 = `HP_FLASH`, 3 = `OF_FLASH`** (log strings `0x40631c`, `0x406324`,
+  `0x40632c`). `OF` is most likely "out of frame", as in `UseFlashOutOfFrame` in
+  `CameraAuthentication.dll`. That expansion is an inference.
+- To arm the flash it takes one of two paths, chosen by a pointer at `0x8390e0` (`+0x18` of the
+  driver's device-info structure). That pointer is **not a flash-device handle**. `0x4172b8` fills it
+  with a 0x14-byte block that a callback of the sensor driver itself fills, and `0x40aa20` reads
+  `[0]` and `[1]` of it as the minimum and maximum pulse time. It describes the sensor's strobe limits.
+  - Pointer set and maximum non-zero: `0x40aa20` builds a request `{flag, delay, time}` and passes it
+    to the core (`0x40b360`). That request has exactly the layout `0x41452c` reads (delay at `+4`, time
+    at `+8`, mode count 1, `OF` flag in word 0, readout-sync bit). This is the sensor-strobe path
+    (registers `0x0c12`–`0x0c1b`).
+  - Pointer null or maximum 0: `0x40afa0` arms the **"CCI HW" path** instead, if a CCI buffer exists.
+    The same split is repeated at the second call site, `0x409cec`.
+- The CCI buffer (`0x831eb4`) is created in the device set-up at `0x408548` **only when the sensor
+  model is `0x861` and a type byte is `0x0c`**. The model is the iris. So the CCI path exists for
+  this sensor and, as far as this driver goes, not for the others.
+- `0x40b134(delay, time, selector)` is that path. It queues four commands on the CCI hardware
+  queue: `0x80` with `delay / 10`, `0x100` with value 1, `0x80` with `time / 10`, `0x100` with
+  value 0. The selector is a registry-configured byte (`<< 16`). So the pulse is one hardware-timed
+  sequence of the SoC's CCI block: wait, switch on, wait, switch off.
+- `0x40afa0` refuses `OF` mode and one more flag with "Capture flash is not supported with CCI HW".
+  So over CCI only `LP` and `HP` are possible. In `0x40aa20`, `LP` derives its time from frame
+  timing (scaled ×10 plus the exposure start time). `HP` and `OF` take the time the AEC asks for.
+
+**Why the sensor strobe is probably not what lights the iris.** With the capability registers at
+0 (section 18) the limits are cleared, `0x41452c` would reject every request, and the limits block
+would have a maximum of 0. That sends the driver down the CCI path, which exists for model `0x861`.
+This is the same conclusion as section 18's first version, now with a mechanism rather than only the
+gating of one function. Two links are inferred, not traced: that the 0x14-byte block is copied from the
+same limits (`+0x110`/`+0x114`), and that the 4-command sequence is a pulse on an output line.
 
 **Not established**
 
-- Which of the two paths the iris takes, and how a request reaches `0x41452c` (the callback table
-  in `0x40c5d0` and the core's handler in `0x40b360` were not followed).
-- What the request does after `0x40b360` hands it on, and which units the time uses. So there is no
-  recipe yet for a host-timed pulse on Linux.
-- Who produces the AEC flash state for the iris. `CameraAuthentication.dll` writes `FlashMode`,
-  `FlashState`, `FlashPower`, `FlashCtrlPulseUs` and `PreFlashIndex`, and its strings are not
-  reachable by literal-pool search (ARM Thumb-2 address building), so its code was not located here.
+- What the CCI commands `0x80` and `0x100` do in hardware (delay and output set are the likely
+  reading), which line they switch (a CCI timer or GPIO, or something else), and the unit of the
+  delay and time values (likely microseconds after the `/ 10`).
+- How that line reaches the IR emitter. `CAMT` lists only GPIO 14 and 102, so it is not one of those.
+  Section 16's idea of a sensor STROBE pin wired to the PMI8994 hardware strobe is therefore unlikely,
+  but the real wiring is not known.
+- Whether the Linux `msm_cci` driver can run such a queue. The kernel tree in the session is partial
+  and could not be checked.
+- The registry byte (selector) and who calls `0x405e80` with a flash state for the iris.
+  `CameraAuthentication.dll` writes `FlashMode`, `FlashState`, `FlashPower`, `FlashCtrlPulseUs` and
+  `PreFlashIndex`, but its code was not located (ARM Thumb-2 address building defeats a literal-pool
+  search).
 
-What this means for LumiaFaceID: unresolved. The evidence points both ways. Against the sensor strobe:
-the capability reads 0 and Windows' function would reject it without an override. For it: the request
-layout, the `OF`/readout-sync mapping, the core's strobe-line self-test, and the PMIC driver's
-strobe-enable switch (`0x403e7c`, set only when the registry config equals 1). Neither the
-"sensor strobe plus PMIC hardware strobe" idea nor a purely host-timed pulse is established. Do not
-plan around either. The safe first step is unchanged: a bounded software `torch_0` at the lowest
-level, for the first IR frame.
+**What this means for LumiaFaceID.** Do not plan around the sensor strobe registers. A pulse timed to
+the frame on Windows is a SoC CCI sequence. On Linux the practical options remain a software-timed
+`torch_0` pulse around SOF, with the bounded current of LumiaFaceID's own audit, or finding whether
+`msm_cci` can queue the same wait/set commands. The first IR frame should still use the lowest
+`torch_0` level for a short time.

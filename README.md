@@ -31,8 +31,8 @@ open points (RAW instead of YUV, IR frame, mount angle): [FINDINGS.md section 19
 The sensor's gain/pedestal/pixel-order/strobe-capability registers all read `0x0000`. Windows has
 the same problem and solves it in `cam_drv_SMIApp_read16`, which overrides reads with DCC block 5.
 That gives `gain = code / 56` (codes 56–448 = 1×–8×) and coarse margin 6, which are now in the plugin.
-The strobe capability reads 0 with no override, but every capability register reads 0 on this sensor,
-so that does not show whether a sensor strobe exists. How Windows lights the iris stays open. See
+The strobe capability reads 0 with no override. With that, the driver does not use the sensor strobe:
+it arms a CCI hardware sequence that exists only for model `0x861` (FINDINGS section 21). See
 [FINDINGS.md section 18](FINDINGS.md#18-sensor-info-reads-0-on-the-phone-windows-takes-it-from-dcc-block-5).
 
 ## Status (after LumiaFaceID `d19ac43`): iris CSI packets received
