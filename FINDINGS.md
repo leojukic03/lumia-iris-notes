@@ -1205,3 +1205,32 @@ section 21). That split is an inference.
   (timed `read -t 1`) removes that wait. The optical off time was still not measured.
 - *First IR frame (`phone-min-current-ir-analysis`).* At 30 ms, ISO 100 with `torch_0` at its minimum, luma p05/p50/p95 was 107/126/212, against p95 of 1 in the IR-off frame. The setup was a white box, not a controlled
   target, and the IR-off frame was a different scene. It shows that the emitter lights the scene within the exposure at ISO 100 and 30 ms, which is the regime Windows uses (section 22). It does not show eye-level detail.
+
+## 27. LumiaFaceID's CCI GPIO follow-up (`28b34e7`–`1ea6df5`), checked
+
+LumiaFaceID took section 21's CCI path further. What it adds, and one point that needs correcting.
+
+**Added by LumiaFaceID (not re-derived here).**
+
+- The Cityman Linux CCI driver does not support a GPIO queue. `msm_cci_config()` handles `MSM_CCI_GPIO_WRITE` with an empty case that returns success, the ioctl payload has only two 16-bit queue fields and no command
+  array, and the register header has I2C queues only. So the sequence of section 21 cannot be reproduced on this kernel without new, iris-private code. LumiaFaceID proposes making the legacy handler return `-EOPNOTSUPP`.
+- On the phone (read only), GPIO 21 is `(MUX UNCLAIMED) (GPIO UNCLAIMED)`, the live pinmux has no `cci_timer0` function, and the device tree has no such group. The pinctrl source does list `cci_timer0` on GPIO 21.
+  That is a SoC mux option, not evidence of what Cityman routes there.
+- The CCI interrupt table of the Windows driver (`0x416304`) has seven masks: M0Q0, M0Q1, M1Q0, M1Q1, then `0xF`, `0xF0`, `0xF00`. The last three match the GPIO queues Q0, Q1, Q2 (one four-cause nibble each).
+
+**Correction: the iris sequence does not use the selector as the GPIO output index.** LumiaFaceID's notes say "the iris sequence uses the configured selector as that output index". The assembly of the iris driver's `0x40b134` shows otherwise:
+
+- `r2` (the third argument, the selector) is copied to `r4` and stored once, as a byte at `sp+0x16` (`strb.w r4,[sp,#0x16]`). That builds a four-word record `{1, selector << 16, 0, 0}`, which is copied into the first 16 bytes of the object at `0x831eb4`.
+- The register `r4` is then reloaded with `0x100` (`mov.w r4,#0x100` at `0x40b19c`) and used as the command type.
+- Both GPIO commands put the index word on the stack as `movs r3,#0 ; str r3,[sp,#4]`, then level `1` (`str r3,[sp,#8]` after `movs r3,#1`) for the rising edge and level `0` for the falling edge.
+
+So the output index is the constant **0**, and the selector goes into the request record. This also fits LumiaFaceID's own later analysis of the platform driver, where the selector chooses a queue (`0x4075bc`). The pin therefore remains CCI output 0, and which TLMM pin
+that is stays unknown. The record's `selector << 16` field and the platform driver's separate selector `b` (owner context `+0xb4`) are not shown to be the same value. It is a CCI request field, not a pin number.
+
+**Selector table in the platform driver (leads, not results).** `FUN_00407600` stores, per selector `b`, two values in the owner context: for `b` = 0, 1, 2, 3, 4, 5, 6 the pair at `+0x60`/`+0x64` is (0,0), (0,0x178), (1,0x188), (0,0x178), (6,0x348), (6,0), (0,0x198).
+Their meaning was not established (they could be register offsets, but the spacing alone does not prove that). The queue-register pointer table at `0x41c5cc` is filled at run time, so its file contents are meaningless. GPIO queue
+register offsets therefore still need a different source (a CCI hardware document or a dump).
+
+**On the new `enrollment demo` (`android/iris-camera-probe/demo-on-phone.sh`).** The script prompts the user to enroll with "IR-assisted samples", which means the iris emitter is pulsed toward a person. The same repository's notes say never to point the emitter at people or eyes, and that
+the minimum code is "not eye-safety validation". Those two statements do not fit together. The emitter level used is the minimum (`torch_0` brightness 14, hardware code 1) for roughly 0.2 s per frame, and Windows' own default levels are unknown in comparable units
+(section 5 of the notes lists codes 10–23 with unknown units), so the actual margin cannot be judged from either side. The demo also forwards the helper's port to the host (`adb forward tcp:18761`), so anything on the host's loopback can request a pulse while the demo runs.
