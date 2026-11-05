@@ -844,7 +844,7 @@ iris streamed again after that.
   clean packets without it.
 - **Packets per frame are consistent with whole frames:** 609,014 / 554 ≈ 1,099 and
   371,690 / 335 ≈ 1,109, against 1,088 lines per frame plus a few short packets.
-- **About 13 fps, not 29.9.** The plugin's mode is 29.9 fps at 1116 lines. The AE in a dark room
+- **About 13 fps, not 29.9** (explained in section 20: the AE asks for 75 ms). The plugin's mode is 29.9 fps at 1116 lines. The AE in a dark room
   without IR asks for exposure above that frame length, and `fill_exposure` then lengthens the frame.
   This has not been checked. The capture results carry exposure and sensitivity, which would settle it.
 - **No VFE SOF line in dmesg.** `msm_isp_check_for_output_error` logged `axi_updating_mask` for
@@ -871,3 +871,36 @@ iris streamed again after that.
 4. **Mount angle.** The preview needed a +90° rotation in LumiaFaceID's app, so the plugin's
    `mount_angle` (90 now) is probably not yet the real value.
 5. **The 13 fps figure** above.
+
+## 20. Exposure readback confirms the timing maths and explains the 13 fps and the noise (LumiaFaceID `a7c9912`)
+
+LumiaFaceID read the iris's Camera2 exposure metadata (`docs/iris-authentication.md`, "Camera2
+exposure timing readback"), with the sensor covered and IR off:
+
+| Mode | Exposure | ISO | Frame duration |
+| --- | --- | --- | --- |
+| AE on, converged | 75.004 ms | 4,859 | 75.184 ms (13.3 fps) |
+| Manual 30 ms, ISO 100 | 29.996 ms | 100 | 33.442 ms |
+
+- **The clock maths in the plugin is right end to end.** 70.08 MHz pixel clock, 2100 pixels per line
+  and 1116 lines give 29.966 µs per line, a 33.442 ms frame, and the manual request returns exactly
+  that. The line length, frame length and PLL values from the DCC are therefore what the sensor uses.
+- **The 13 fps are the AE, not a fault.** 75 ms is about 2,503 lines, more than the 1,116-line frame,
+  so `ir0861_fill_exposure` lengthens the frame to `lines + margin` and the rate falls to 1 / 75 ms.
+  Section 19's open question is answered.
+- **The noise is gain.** Camera2 reports ISO 4,859, which is 48.6× against a nominal ISO 100. The
+  sensor stops at 8× (code 448), and `ir0861_calculate_exposure` hands the rest to the ISP
+  (`isp_digital_gain = gain / sensor_real_gain`), about 6×. The 4,859 is above the advertised ISO
+  range of 100–800, so the metadata and the range disagree. In a dark room with no IR, AE simply
+  runs the imx179 chromatix's gain ceiling.
+- **So a noisy frame in the dark says little about the sensor.** The frame of section 19 and the
+  photographed preview were made at this gain. Windows keeps gain low and uses a short exposure
+  with a strong IR pulse (section 16). The test that matters is a short exposure at ISO 100 with
+  the emitter on, which can be compared directly with the manual 30 ms / ISO 100 setting that
+  already works through Camera2.
+
+**Same audit, flash side.** LumiaFaceID's static review reaches the same place as section 18 from the
+kernel side: the plugin sets `is_flash_supported = 0`, `camera@2` has no `qcom,led-flash-src`, so
+Camera2 flash controls cannot reach the iris. It also finds that wiring `torch0_trigger` would put
+the PMIC's 120 mA operating current (not the 14 mA sysfs level) on the iris, and that `msm_flash`'s
+watchdog does not cover `CFG_FLASH_LOW`. Those are reasons not to enable the generic torch route.
