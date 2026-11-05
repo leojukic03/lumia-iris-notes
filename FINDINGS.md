@@ -1114,7 +1114,7 @@ Same sources as section 22. This closes most of section 23's open point about th
 `android/tools/iris-capture` decodes. The extra 0x1c bytes are not decoded here. The component can also ask the camera core for another output depth
 (`CORE_CMD_ID_SET_VIDEO_OUTPUT_FORMAT`, `SetOutputBitDepth`) and falls back to 8-bit when the requested depth is invalid. Its image details are `BayerOrder`, `BitDepth`, `Height`, `Width`, `Stride`.
 
-**The conversion to the engine's 8-bit grey frame is in the ARC step, not here.** The ARC (Icaros) task is configured through stash names `Arc.Task`, `Arc.Outputs`
+**The conversion to the engine's 8-bit grey frame: see the update at the end of this section.** The ARC (Icaros) task is configured through stash names `Arc.Task`, `Arc.Outputs`
 (`OutputCount`, `OutputWidth`, `OutputHeight`, `Output[0].FrameOutputType`, `SaveOutput`), `Arc.Scaler` (with a `Config[HighRes]` entry), `Arc.Gather3AStats` (`Width`, `Height`)
 and `EyeROI[0..1]` (`Width`, `Height`). The eye statistics it returns are `IrisPct_P90/P95/P99/avg/med` and `IrisPct_usedTotalExp`. I did not trace how the scaler turns RAW10 into the 8-bit
 output, so tone mapping (a plain shift of the top 8 bits, or a gamma) is **not established**. For Android the safe starting point is the top eight bits of the RAW10 value.
@@ -1135,3 +1135,20 @@ about the leftmost 300 columns of the frame before ARC. Why (lens, emitter, a pa
 `Rotation\FlipMirror` there. For camera index 3 it picks `FFC1` (a reading of the branch in `0x408548`), and the hive has no `FFC1` key. The only model-specific flip in the driver
 (`0x40abf8`) applies to models `0x3bb` and `0x7a3`, not `0x861`. So the iris most likely runs with the orientation register `0x0101` left at 0, which is what the plugin leaves it at. The mount
 angle (rotation of the delivered image) is a separate matter and is still open.
+
+**Update: bit depth and ARC output, traced (`SetOutputBitDepth` `0x10005cf4`, `InitializeController` `0x100098fc`).**
+
+- The output bit depth is a run-time setting and only **8 or 10** is accepted (anything else logs a warning and becomes 8). The function stores the depth and the frame size as
+  `depth × width × height / 8` bytes. For 10 that is `W × H × 5/4`, the packed RAW10 size above. For 8 it is `W × H`, **one byte per pixel with no padding**, which is exactly the
+  engine's input contract in section 23 (one byte per pixel, pitch equal to the width). So the 8-bit case lines up with the engine without any further reformatting.
+- Who asks for 8 and who for 10 was not traced (the call goes through an interface). The engine expecting 8-bit pixels makes 8 the likely value on the iris path. That is an inference.
+- For the iris, `InitializeController` configures the ARC task with **one output, `SaveOutput` = 1, `Output[0].FrameOutputType` = `"DNG"`**, a scaler with `OutputWidth` and
+  `OutputHeight` of −1 (no scaling, the `HighRes` configuration), and a 3A statistics grid of **36 × 27** (`Gather3AStats.Width` 0x24, `Height` 0x1b). So in the iris task the ARC step
+  is set up to hand back a raw-type frame at full size and to produce statistics, not to run a colour pipeline to YUV.
+- Icaros contains the full set of ISP algorithm modules (`CfaiLuma`, `ConvertBitDepth`, `ConvertBitDepthScale`, `Gamma`, `SRGBGamma`, `CCMGammaRGB2YUV`, `DownscaleRawImage`, `Scaler`). Which of them the iris
+  task enables is chosen by the pipeline tuning. The `0C086101.dcc` contains the ARC tuning (block `0xfe9b`, 480,962 bytes, header text "ISP_SW_ARC") and the hardware ISP tuning (block `0x6`,
+  14,991 bytes, "ISP_HW_QC"). Its container format was not decoded, so the enabled steps and any gamma are **not established**.
+
+**Best reading for Android.** Windows' engine sees an 8-bit frame that came straight from the RAW data at full size. The scaler is a no-op, the task is a raw-type output, and there is no sign of a colour
+conversion. The simplest consistent model is therefore: raw sensor value, linearly reduced from 10 to 8 bits (the top eight bits), no demosaic and no gamma. That is a model, not a proven fact. A comparison of
+the top-eight-bit RAW10 frame from `iris_capture` against the YUV frame of the Android ISP would show how much the ISP changes the image.
