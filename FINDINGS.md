@@ -1071,8 +1071,8 @@ is a guess. `FocusDistance` 25 is presumably centimetres; also a guess.
 `IrisSensorAdapter.dll` and the standard `WinBioStorageAdapter.DLL`. Templates are therefore kept by Windows' ordinary biometric storage adapter, not by the engine.
 `CaptureIntervalInMilliseconds` is 16.
 
-**Not established.** The sensor frame size and cropping that Windows hands the engine (the `Viewport…` values of section 22 are not 640×480 or larger, so they are
-not the engine frame), how raw 10-bit data becomes the 8-bit frame, the matcher's score scale, template format, and the liveness logic.
+**Not established.** The exact frame size the engine finally gets (the `Viewport…` values of section 22 are not 640×480 or larger, so they are not the engine frame; see section 25 for
+the crop), the matcher's score scale, template format, and the liveness logic. How raw data reaches the 8-bit frame is partly resolved in section 25.
 
 ## 24. How the IR settings travel from the 3A engine to the sensor driver (`CameraAuthentication.dll`)
 
@@ -1104,3 +1104,34 @@ raw frame with its bit depth. How it becomes the 8-bit grey frame of section 23 
 
 **What it means for LumiaFaceID.** A `ContinuousLED` mode is part of Windows' own design, so steady `torch_0` at a low level is a legitimate first mode, not only a shortcut. The 3A
 engine, not the camera driver, decides when and how long the IR pulses (`FlashCtrlPulseUs`), from the frame statistics and the eye region (`EyeROI`, `IrisPct_P99/P95/P90`).
+
+## 25. Where the 8-bit frame comes from: RAW10 in, crop, ARC (`CameraAuthentication.dll`, image registry)
+
+Same sources as section 22. This closes most of section 23's open point about the pixel format.
+
+**What the authentication component receives is packed RAW10.** `CCameraConnection::PrepareOutputBuffers` (`0x10006abc`) sizes each of five output buffers with a row pitch of
+`width × 5 / 4` bytes and a total of `height × width × 5 / 4 + 0x1c` bytes, and records a bit depth of 10. Five bytes per four pixels is exactly MIPI packed RAW10, the layout
+`android/tools/iris-capture` decodes. The extra 0x1c bytes are not decoded here. The component can also ask the camera core for another output depth
+(`CORE_CMD_ID_SET_VIDEO_OUTPUT_FORMAT`, `SetOutputBitDepth`) and falls back to 8-bit when the requested depth is invalid. Its image details are `BayerOrder`, `BitDepth`, `Height`, `Width`, `Stride`.
+
+**The conversion to the engine's 8-bit grey frame is in the ARC step, not here.** The ARC (Icaros) task is configured through stash names `Arc.Task`, `Arc.Outputs`
+(`OutputCount`, `OutputWidth`, `OutputHeight`, `Output[0].FrameOutputType`, `SaveOutput`), `Arc.Scaler` (with a `Config[HighRes]` entry), `Arc.Gather3AStats` (`Width`, `Height`)
+and `EyeROI[0..1]` (`Width`, `Height`). The eye statistics it returns are `IrisPct_P90/P95/P99/avg/med` and `IrisPct_usedTotalExp`. I did not trace how the scaler turns RAW10 into the 8-bit
+output, so tone mapping (a plain shift of the top 8 bits, or a gamma) is **not established**. For Android the safe starting point is the top eight bits of the RAW10 value.
+
+**A crop of 300 columns on the left.** The image registry has `HKLM\SOFTWARE\OEM\MMO\camera\tertiary\cropWidthLeft` = **300**. The component reads `cropWidthLeft` and `cropWidthRight` and logs a
+failure to read each. Only the left value exists, so the right crop is left at its default. A warning says that crop values larger than the image reset the crop to 0. So Windows removes
+about the leftmost 300 columns of the frame before ARC. Why (lens, emitter, a part of the field that cannot hold an eye) is unknown. The per-eye regions it logs are "relative" to the cropped area.
+
+**Other values in the camera section of the hive that touch the iris path:**
+
+| Key | Value | Meaning |
+| --- | --- | --- |
+| `camera\TFF` | `Module` 7, `PMICType` 1 | The iris flash path: module 7 matches the LED ID 7 whose current codes section 5 lists. |
+| `camera\Barc` | `BarcVersion` "100.10", `IsEnabled` 1, `MaxBufferAmount` 15 | Purpose not determined. |
+| `camera\FFC\Rotation`, `camera\RFC\Rotation` | `FlipMirror` 1 | Front and rear camera orientation flag. There is **no** such key for the iris. |
+
+**Orientation of the iris sensor (inferred).** The sensor driver builds its registry path from the camera index and only knows the bases `FFC`, `FFC1`, `RFC`, `RFC1`; it reads
+`Rotation\FlipMirror` there. For camera index 3 it picks `FFC1` (a reading of the branch in `0x408548`), and the hive has no `FFC1` key. The only model-specific flip in the driver
+(`0x40abf8`) applies to models `0x3bb` and `0x7a3`, not `0x861`. So the iris most likely runs with the orientation register `0x0101` left at 0, which is what the plugin leaves it at. The mount
+angle (rotation of the delivered image) is a separate matter and is still open.
