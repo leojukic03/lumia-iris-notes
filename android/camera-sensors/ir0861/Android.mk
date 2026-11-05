@@ -8,6 +8,9 @@ LOCAL_MODULE := libmmcamera_ir0861
 LOCAL_MODULE_CLASS := SHARED_LIBRARIES
 LOCAL_SRC_FILES := sensor_lib_ir0861.c
 LOCAL_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -fvisibility=hidden
+ifeq ($(CITYMAN_CAMERA_IRIS_WINDOWS_AE),true)
+LOCAL_CFLAGS += -DIR0861_WINDOWS_AE_LIMITS=1
+endif
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/../imx230 $(TARGET_KERNEL_SOURCE)/include
 ifeq ($(strip $(CITYMAN_CAMERA_IRIS_PROFILE)),)
 $(error ir0861 requires CITYMAN_CAMERA_IRIS_PROFILE pointing to the private cityman-iris-stream-profile.hex)

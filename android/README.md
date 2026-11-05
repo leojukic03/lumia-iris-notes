@@ -22,7 +22,7 @@ standard path.
 | `camera-sensors/ir0861/generate-ir0861.py` | same | Turns LumiaFaceID's private `cityman-iris-stream-profile.hex` (program SHA-256 `754786…8eb5`) into `ir0861_registers.generated.h` (87 idle + 30 mode writes) |
 | `camera-sensors/ir0861/Android.mk` | same | `libmmcamera_ir0861` (32-bit vendor), only with `CITYMAN_CAMERA_IRIS=true` |
 | `tools/patch-sensor-list-ir0861.py` | device tree `tools/camera-a13/` | Replaces the unused `ov4688` entry in the daemon's sensor list with `ir0861` (same length) |
-| `tools/iris-capture/` | device tree `tools/iris-capture/` | `iris_capture`: opens one explicit Camera2 ID through the NDK, flash forced off, saves a few frames with min/max/mean. `raw_to_pgm.py` turns a frame into a viewable PGM |
+| `tools/iris-capture/` | device tree `tools/iris-capture/` | `iris_capture`: opens one explicit Camera2 ID through the NDK, flash forced off, saves a few frames with min/max/mean. `raw_to_pgm.py` turns a frame into a viewable PGM. `windows_frame.py` turns a RAW frame into what the Windows iris engine is fed (8-bit, 300-column left crop, two eye images with a 300 px overlap) |
 | `kernel/0001-msm_csiphy-set-bit1-on-upper-combo-lanes.patch` | kernel | Permanent MISC1 fix: lane 3 `0x4 → 0x6`, lane 4 `0x8 → 0xA` in combo mode only |
 | `kernel/0002-msm8994-camera-csid3-csi3phy-clock.patch` | kernel | `camss_csi3phy_clk` on CSID3 (the CSID3 half of LumiaFaceID's tested experiment patch) |
 | `kernel/0003-camera-cityman-add-iris-camera-slot.patch` | kernel | `qcom,camera@2`: CSIPHY2/CSID3, MCLK1/GPIO14, reset GPIO102, L17/LVS1/S3/L3 with `cam-vreg-op-mode = <300000 0 300000 80000>`. Ships `status = "disabled"` |
@@ -51,7 +51,8 @@ the port's ABI header, and all of the header's ARM32 size/offset `_Static_assert
    | `0x0006` | pixel order | 0 = GRBG (sensor, no override) | `PIXEL_ORDER_CCS` |
 
    So `gain = code / 56`, which gives 1×–8×. Orientation: Windows writes `0x0101 = 0`, unless the OEM
-   registry key `Rotation\FlipMirror` is 1, which gives `3`. That registry value is not public.
+   registry key `Rotation\FlipMirror` is 1, which gives `3`. The Windows Mobile image has that key only for
+   the front and rear cameras, not for the iris (FINDINGS section 25), so `0x0101 = 0` is most likely right.
 1. **Kernel:** apply 0001–0003 and set `qcom,camera@2` to `status = "ok"` for the test build. The
    front camera keeps working: 0001 only changes combo mode, and 0002 only adds a clock to CSID3.
 2. **Plugin:** copy `camera-sensors/ir0861/` into the device tree and build:
@@ -61,6 +62,12 @@ the port's ABI header, and all of the header's ARM32 size/offset `_Static_assert
    m libmmcamera_ir0861
    ```
    Push `/vendor/lib/libmmcamera_ir0861.so`.
+
+   Optional, `export CITYMAN_CAMERA_IRIS_WINDOWS_AE=true` before `m`: caps the AE at Windows' iris
+   limits (FINDINGS section 22): at most 667 lines (20 ms) and 4× (ISO 400), with no ISP digital gain.
+   Without it the AE goes up to 75 ms and ISO ~4860 (8× analog plus ~6× ISP digital) in the dark. With it,
+   the frame stays at 29.9 fps and a dark scene stays dark instead of noisy. Manual requests above those
+   limits are clamped too, so a 30 ms baseline becomes 20 ms. The flag is off by default.
 3. **Sensor list:** run the patch script on a copy of `/vendor/lib/libmmcamera2_sensor_modules.so`
    (expects the shipped vs6955-patched file, SHA-256 `2d14928f…ec1b`), then bind-mount or install
    it the same way as for vs6955.
@@ -93,6 +100,18 @@ the port's ABI header, and all of the header's ARM32 size/offset `_Static_assert
    If no frame arrives, read the CSID3 packet count from the same run. With zero packets and the
    diagnostic still getting packets on the same boot, apply 0004. With packets but no SOF, check the
    ISPIF select bits below.
+6. **Windows-shaped input for matcher work.** `windows_frame.py` takes the same RAW frame and writes
+   `<prefix>-frame.pgm` (8-bit, top eight bits of RAW10, leftmost 300 columns cropped) and
+   `<prefix>-eye0.pgm` / `-eye1.pgm` (the engine's split: along the width for rotation 0/180, along the
+   height for 90/270, overlap `min(300, size / 2)`, halves swapped for 180/270). It prints mean, median and
+   p90/p95/p99 per image, the statistics Windows' exposure control uses (FINDINGS sections 23–25):
+   ```sh
+   python3 tools/iris-capture/windows_frame.py iris-0.raw10 iris-0 --width 1920 --height 1088 \
+       --stride <stride from the log> --rotation 0
+   ```
+   Windows' rotation value for this phone is unknown. Camera2 reports a sensor orientation of 90°,
+   so try 0 and 90 and keep the one where each eye image holds one eye. The 8-bit conversion is the
+   simplest model consistent with the Windows findings, not a recovered tone curve.
 
 ## Things to watch
 

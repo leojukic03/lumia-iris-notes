@@ -109,6 +109,24 @@ static struct msm_camera_i2c_reg_array hold_off[] = {{0x0104, 0, 0}};
                             IR0861_SENSOR_PIXEL_ORDER_CCS == 2 ? 0u : 1u)
 #define IR0861_MAX_LINES    (65535u - IR0861_SENSOR_COARSE_MARGIN)
 
+/*
+ * Optional Windows-like AE limits (FINDINGS section 22): Windows keeps the iris
+ * exposure at or below 20 ms and ISO 400 and leaves no gain to the ISP. With
+ * the default limits the AE reaches 75 ms and ISO ~4860 in the dark (8x analog
+ * plus ~6x ISP digital gain). Build with CITYMAN_CAMERA_IRIS_WINDOWS_AE=true to
+ * apply them; off by default so existing manual baselines (30 ms) still work.
+ */
+#ifndef IR0861_WINDOWS_AE_LIMITS
+#define IR0861_WINDOWS_AE_LIMITS 0
+#endif
+#if IR0861_WINDOWS_AE_LIMITS
+#define IR0861_AE_MAX_LINES 667u   /* 20 ms / (2100 px / 70.08 MHz) */
+#define IR0861_AE_MAX_GAIN  4.0f   /* ISO 400, code 224 */
+#else
+#define IR0861_AE_MAX_LINES IR0861_MAX_LINES
+#define IR0861_AE_MAX_GAIN  8.0f   /* code 448 / 56 */
+#endif
+
 static float ir0861_gain_from_code(uint32_t code)
 {
     return ((float)IR0861_SENSOR_GAIN_M0 * (float)code + (float)IR0861_SENSOR_GAIN_C0) /
@@ -139,16 +157,17 @@ static int32_t ir0861_calculate_exposure(float gain, uint32_t lines,
     if (!out || (value.bits & 0x7f800000u) == 0x7f800000u || gain <= 0.0f)
         return -22;
     if (gain < 1.0f) gain = 1.0f;
+    if (IR0861_WINDOWS_AE_LIMITS && gain > IR0861_AE_MAX_GAIN) gain = IR0861_AE_MAX_GAIN;
     analog = gain > max_gain ? max_gain : gain;
     code = ir0861_code_from_gain(analog);
     if (lines < 4u) lines = 4u;
-    if (lines > IR0861_MAX_LINES) lines = IR0861_MAX_LINES;
+    if (lines > IR0861_AE_MAX_LINES) lines = IR0861_AE_MAX_LINES;
     out->register_gain = code;
     out->lines = lines;
     out->sensor_digital_gain = 0x100;
     out->sensor_real_gain = ir0861_gain_from_code(code);
     out->sensor_real_digital_gain = 1.0f;
-    out->isp_digital_gain = gain / out->sensor_real_gain;
+    out->isp_digital_gain = IR0861_WINDOWS_AE_LIMITS ? 1.0f : gain / out->sensor_real_gain;
     return 0;
 }
 
@@ -164,7 +183,7 @@ static int32_t ir0861_fill_exposure(uint32_t gain, uint32_t digital_gain,
     if (gain < code_min) gain = code_min;
     if (gain > code_max) gain = code_max;
     if (lines < 4u) lines = 4u;
-    if (lines > IR0861_MAX_LINES) lines = IR0861_MAX_LINES;
+    if (lines > IR0861_AE_MAX_LINES) lines = IR0861_AE_MAX_LINES;
     if (frame_lines < IR0861_FRAME_LINES) frame_lines = IR0861_FRAME_LINES;
     if (frame_lines < lines + IR0861_SENSOR_COARSE_MARGIN)
         frame_lines = lines + IR0861_SENSOR_COARSE_MARGIN;
@@ -226,7 +245,7 @@ struct angler_sensor_descriptor cityman_ir0861_descriptor = {
     .output = {0, 1, 1, IR0861_BAYER_ORDER},
     .output_registers = {0x034c, 0x034e, 0x0342, 0x0340},
     .exposure_registers = {0x0202, 0x0204, IR0861_SENSOR_COARSE_MARGIN},
-    .aec = {1.0f, 8.0f, 8.0f, IR0861_MAX_LINES},
+    .aec = {1.0f, IR0861_AE_MAX_GAIN, IR0861_AE_MAX_GAIN, IR0861_AE_MAX_LINES},
     .exposure_start_delay = 1, .exposure_update_delay = 2,
     .lens = {.focal_length = 0.0f, .pixel_pitch = 0.0f, .f_number = 2.4f,
              .sensing_method = 2, .crop_factor = 1.0f,
