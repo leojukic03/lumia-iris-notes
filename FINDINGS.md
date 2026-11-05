@@ -1152,3 +1152,56 @@ angle (rotation of the delivered image) is a separate matter and is still open.
 **Best reading for Android.** Windows' engine sees an 8-bit frame that came straight from the RAW data at full size. The scaler is a no-op, the task is a raw-type output, and there is no sign of a colour
 conversion. The simplest consistent model is therefore: raw sensor value, linearly reduced from 10 to 8 bits (the top eight bits), no demosaic and no gamma. That is a model, not a proven fact. A comparison of
 the top-eight-bit RAW10 frame from `iris_capture` against the YUV frame of the Android ISP would show how much the ISP changes the image.
+
+## 26. The receiver of the iris result packet, and what LumiaFaceID's new results mean (checked against `5a75450` / `e399028`)
+
+Sources: the RM-1085 image (section 22) and the public driver package. The core driver is byte-identical in both (`qccamcore8994.sys`, SHA-256 `d00cf623…a415`, also `qccamisp8994`,
+`qccamplatform8994`, `qccamflashtertiary8994`).
+
+**Correction: the IOCTL code is `0x00232A43`, not `0x0023432A`.** The literal at `0x100081c4` in `CameraAuthentication.dll` is the bytes `43 2a 23 00`, which is `0x00232A43` as a little-endian
+word, and Ghidra's decompile shows the same value. Decoded as a `CTL_CODE`: device type `0x23`, function `0xA90`, `METHOD_NEITHER`, any access. The value `0x0023432A` has bytes in a different order and
+corresponds to function `0x0CA` with `METHOD_OUT_DIRECT`. That is the reading behind the "selector `0xCA` in `qccamavs8994`" lead in LumiaFaceID's `windows-flash-driver-analysis-2026-11-05.json`,
+so that lead rests on a mis-read code.
+
+**The receiver is the core driver.** `qccamcore8994.sys`, `CoreFileObjectContext::HandleIoControl` (`0x405dcc`), has a branch `param_3 == 0x232a43`. It rejects a null buffer or zero length, then calls through
+an interface object next to the ISP interface (`+0x174` of the file context, sub-interface `+0x30`, vtable slot `+0x64`) with the caller's buffer and length. The core also contains the packet names.
+`CCameraEngine::SetVideoConfigUpdate` (`0x41ea08`) calls the parser `0x42212c` (log string `CIcarosDmftDriver.cpp`) and then updates the VFE configuration
+(`m_pVFEService->Configure(CONFIGURER_TYPE_UPDATE)`). The link from the IOCTL branch to that method goes through the vtable slot and was not walked, but the buffer layout below matches what the
+parser reads exactly, and none of the other camera drivers checked (`qccamavs8994`, `qccamisp8994`, `qccamplatform8994`, `qccamflashtertiary8994`, the iris and front sensor drivers) contains the names `LumiaVideo3aResults` or `LumiaVideoConfigUpdate`.
+
+**Packet layout, as the parser reads it (`0x42212c`).** A main header with version 1, a name `LumiaVideoConfigUpdate` (32-byte field at offset 4), and its header size at offset `0x28`. Blocks follow, each with
+version 1, a 32-byte name at offset 4, the block size at `0x24` and the block's header size at `0x28`. A block named `LumiaVideo3aResults` goes to the engine's handler at vtable `+0x3c`; `LumiaAutotunerRawData` goes to `+0x44`. A
+version or name mismatch returns an error (`-0x106`).
+
+**The AEC and flash fields line up between the core and the sensor driver.** In the core, `NokiaElfsPlugIn` fills a flash structure and an AEC structure after each 3A run.
+Its own log names the flash fields: `FlashState`, `FlashPower`, `FlashCtrlPulseUs`, `UseHighPowerMode`, `UseAssistLight`, `PreFlashIndex`, and hands them to the flash driver (`ConfigureDriver`, vtable `+0x6e8`).
+It copies the same values into a "sensor AEC results" structure (`+0x4a0`) and hands that to the sensor driver (vtable `+0x690`). Compared with section 21's `0x405e80` in the iris driver:
+
+| Offset in the sensor AEC record | Core source (`NokiaElfsPlugIn`) | Used in `0x405e80` as |
+| --- | --- | --- |
+| `+0x10` | `FlashState` | state, arms the flash when 2 or 3 |
+| `+0x18` | `FlashCtrlPulseUs` | pulse time |
+| `+0x1c` (byte) | `UseHighPowerMode` | selects `HP_FLASH` |
+| `+0x1d` (byte) | `PreFlashIndex` | compared with the stored value |
+| `+0x0f` (byte) | a result byte whose name was not resolved | selects `OF_FLASH` |
+
+So the sensor driver of section 21 does read what the core's 3A step writes. That makes section 21's chain solid from the 3A result to the CCI sequence. The byte at `+0x0f` is likely
+`UseFlashOutOfFrame` but that name match is not proven.
+
+**Two consumers, not one.** The same flash values go to the flash driver (PMIC side) and, as AEC results, to the sensor driver (which arms the CCI GPIO sequence). LumiaFaceID's notes call the per-frame
+illumination "a host-side flash-driver request". The code shows both paths. A consistent reading is: the flash driver sets mode and current, and the CCI sequence supplies the timing edge (GPIO 21,
+section 21). That split is an inference.
+
+**LumiaFaceID's new results, checked.**
+
+- *ISO 4,860 outside the advertised range 100–800 (`phone-ae-quality-result`).* This comes from our plugin's design, not from vendor metadata. `ir0861_calculate_exposure` clamps the sensor gain to the maximum of
+  8× (code 448, section 18, ISO 800) and hands the remainder to the ISP as `isp_digital_gain = gain / sensor_real_gain`. The AE asked for a total of about 48.6×, so 8× is analog and about 6.07× is ISP
+  digital gain (`4,860 / 800`). The reported sensitivity is consistent with that total (`100 × 48.6`). The post-RAW boost stays at 100, most likely because the plugin reports `sensor_digital_gain = 0x100` and the HAL does not
+  expose the ISP digital gain as post-RAW boost (LumiaFaceID read the open-source HAL as doing so; that would give about 607 here, so something in that path differs, and it was not traced). On this
+  reading the analog gain at ISO 4,860 is capped at 8×, which LumiaFaceID's note left open. That follows from our plugin code and was not measured on the sensor.
+- *Manual ISO 100–800 tracks exactly (`phone-manual-sensitivity-sweep`).* That is the expected result when the request stays inside the analog range.
+- *`846 ms` OFF acknowledgement after STOP (`phone-min-current-ir-analysis`).* It is explained by the previous helper script: it wrote brightness 0 first, then waited for a killed `sleep 1` subshell. The acknowledgement
+  arrived about 1.05 s after the pulse request, which is the end of that one-second sleep. So the emitter was off at STOP (about 0.2 s after the request) and only the acknowledgement was late. This commit's script
+  (timed `read -t 1`) removes that wait. The optical off time was still not measured.
+- *First IR frame (`phone-min-current-ir-analysis`).* At 30 ms, ISO 100 with `torch_0` at its minimum, luma p05/p50/p95 was 107/126/212, against p95 of 1 in the IR-off frame. The setup was a white box, not a controlled
+  target, and the IR-off frame was a different scene. It shows that the emitter lights the scene within the exposure at ISO 100 and 30 ms, which is the regime Windows uses (section 22). It does not show eye-level detail.
