@@ -1,4 +1,4 @@
-# Iris as a third Android camera (experimental)
+# Iris as a third Android camera (works on the phone, image quality unresolved)
 
 Drop-in pieces to make the iris sensor a normal camera (`camera@2`) on the cityman LineageOS port, so
 the standard Qualcomm stack (`mm-qcamera-daemon` → ISPIF → VFE) delivers frames. They follow the
@@ -7,8 +7,9 @@ port's own front-camera plugin:
 `lineage-23-cityman`, `camera-sensors/vs6955/`. That plugin is built from C against
 `camera-sensors/imx230/angler_sensor_abi.h`, so **the missing `sensor_lib.h` is not needed**.
 
-On the phone so far (LumiaFaceID `84e228b`), the plugin probes and the iris appears as camera ID 2.
-No frame has been streamed through this path yet. The receiver settings were verified in LumiaFaceID `d19ac43`:
+On the phone (LumiaFaceID `83e40ed`) the plugin probes, the iris appears as a third camera, and
+Camera2 streams it with clean CSID3 packets (FINDINGS section 19). The receiver settings were first
+verified in LumiaFaceID `d19ac43`:
 with `camss_csi3phy_clk`, regulator load votes and MISC1 `0x06`/`0x0A`, CSID3 received 12,677 and
 12,720 iris packets with no ECC/CRC errors. The pieces below turn exactly those settings into the
 standard path.
@@ -66,18 +67,20 @@ the port's ABI header, and all of the header's ARM32 size/offset `_Static_assert
 4. **Boot** with `fastboot boot`. Look for `ir0861 probe succeeded` in `dmesg`, and check that the
    camera list grows to three.
 
-   Done in LumiaFaceID `84e228b`: probe succeeded (`read id 0x861`), and there are three cameras
-   (0 back, 1 front, 2 front). The iris is **ID 2**: front-facing, GRBG, 1920×1088.
-5. **First stream with `iris_capture`.** Camera apps only pick "the front camera", which can be
-   ID 1. This tool opens ID 2 explicitly:
+   Done in LumiaFaceID `84e228b`: probe succeeded (`read id 0x861`), and there are three cameras.
+   The iris has a **different ID from boot to boot** (2 on a temporary boot, 1 once flashed), so
+   find it by its 1920×1088 pixel array, never by number.
+5. **Streaming works** (LumiaFaceID `83e40ed`, Camera2 YUV). **`iris_capture` takes a RAW frame**,
+   which avoids the ISP treating a mono sensor as Bayer. Without `-c` it picks the unique 1920×1088
+   camera:
    ```sh
    m iris_capture
    adb root
    adb push $OUT/system/bin/iris_capture /data/local/tmp/
    adb shell /data/local/tmp/iris_capture -l
-   adb shell /data/local/tmp/iris_capture -c 2 -n 5 -t 10
+   adb shell /data/local/tmp/iris_capture -n 5 -t 10
    ```
-   `-l` lists every camera with its formats, so the iris can be confirmed before opening it. The
+   `-l` lists every camera with its formats. The
    capture prefers RAW10, then RAW16, then YUV (`-f` forces one). It prints one line per frame and
    writes `/data/local/tmp/iris-N.<format>`. Run it as root, because cameraserver grants the CAMERA
    permission to uid 0. The flash is forced off. If AE never converges, `-e 30000 -s 100` gives a fixed

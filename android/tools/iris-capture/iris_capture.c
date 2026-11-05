@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * iris_capture: open one explicit Camera2 ID through the NDK and save a few
- * frames. Made for the cityman iris (camera ID 2), which no camera app can
- * select on its own because it shares the "front" facing with the vs6955.
+ * frames. Made for the cityman iris, which no camera app can select on its
+ * own because it shares the "front" facing with the vs6955. The numeric ID
+ * changes between boots (2 on the temporary boot, 1 once flashed), so without
+ * -c the tool picks the unique camera with a 1920x1088 pixel array.
  *
  *   iris_capture -l                      list cameras, formats and ranges
- *   iris_capture [-c 2] [-n 5] [-f raw10|raw16|yuv] [-e exposure_us]
+ *   iris_capture [-c id] [-n 5] [-f raw10|raw16|yuv] [-e exposure_us]
  *                [-s iso] [-t timeout_s] [-o /data/local/tmp]
  *
  * Run as root (adb root): cameraserver then grants the CAMERA permission.
@@ -254,6 +256,36 @@ static void list_cameras(ACameraManager *manager)
     ACameraManager_deleteCameraIdList(ids);
 }
 
+/* The iris is the only camera with a 1920x1088 pixel array. */
+static char *find_iris(ACameraManager *manager)
+{
+    ACameraIdList *ids = NULL;
+    char *found = NULL;
+    int matches = 0;
+    if (ACameraManager_getCameraIdList(manager, &ids) != ACAMERA_OK || !ids)
+        return NULL;
+    for (int i = 0; i < ids->numCameras; i++) {
+        ACameraMetadata *chars = NULL;
+        ACameraMetadata_const_entry e;
+        if (ACameraManager_getCameraCharacteristics(manager, ids->cameraIds[i], &chars) != ACAMERA_OK || !chars)
+            continue;
+        if (ACameraMetadata_getConstEntry(chars, ACAMERA_SENSOR_INFO_PIXEL_ARRAY_SIZE, &e) == ACAMERA_OK &&
+            e.count >= 2 && e.data.i32[0] == 1920 && e.data.i32[1] == 1088) {
+            matches++;
+            if (!found)
+                found = strdup(ids->cameraIds[i]);
+        }
+        ACameraMetadata_free(chars);
+    }
+    ACameraManager_deleteCameraIdList(ids);
+    if (matches != 1) {
+        printf("found %d cameras with a 1920x1088 pixel array; pass -c explicitly\n", matches);
+        free(found);
+        return NULL;
+    }
+    return found;
+}
+
 static void usage(const char *name)
 {
     fprintf(stderr, "usage: %s -l | [-c id] [-n frames] [-f raw10|raw16|yuv] [-e exposure_us] "
@@ -262,7 +294,8 @@ static void usage(const char *name)
 
 int main(int argc, char **argv)
 {
-    const char *id = "2", *want_format = NULL;
+    const char *id = NULL, *want_format = NULL;
+    char *auto_id = NULL;
     int frames = 5, timeout_s = 10, opt, rc = 1;
     int64_t exposure_us = 0;
     int32_t iso = 100, width = 0, height = 0;
@@ -298,10 +331,21 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (!id) {
+        auto_id = find_iris(manager);
+        if (!auto_id) {
+            ACameraManager_delete(manager);
+            return 1;
+        }
+        id = auto_id;
+        printf("iris is camera %s\n", id);
+    }
+
     ACameraMetadata *chars = NULL;
     camera_status_t cs = ACameraManager_getCameraCharacteristics(manager, id, &chars);
     if (cs != ACAMERA_OK || !chars) {
         printf("camera %s: characteristics failed (%d)\n", id, cs);
+        free(auto_id);
         ACameraManager_delete(manager);
         return 1;
     }
@@ -322,6 +366,7 @@ int main(int argc, char **argv)
     ACameraMetadata_free(chars);
     if (!st.format) {
         printf("camera %s: no output for %s (see -l)\n", id, want_format ? want_format : "raw10/raw16/yuv");
+        free(auto_id);
         ACameraManager_delete(manager);
         return 1;
     }
@@ -433,6 +478,7 @@ out:
         ACameraDevice_close(device);
     if (reader)
         AImageReader_delete(reader);
+    free(auto_id);
     ACameraManager_delete(manager);
     return rc;
 }

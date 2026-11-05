@@ -8,8 +8,8 @@ It holds findings from decompiling the original Windows ARM camera drivers with
 [REA](https://github.com/morluto/rea) and Ghidra 12.1.4, a script that reproduces the decompilation
 from the public driver package, and, in [`android/`](android/README.md), experimental pieces that
 make the iris a third Android camera. Those are a sensor plugin, kernel/DT patches and a
-sensor-list patch, plus `iris_capture` to open camera ID 2. On the phone the plugin probes and the
-iris shows up as camera ID 2. No frame has been streamed through it yet.
+sensor-list patch, plus `iris_capture` to take a RAW frame from the iris. On the phone the iris
+now streams through the standard Android camera stack (see below).
 
 ## Next step: iris as `camera@2` ([`android/`](android/README.md))
 
@@ -18,6 +18,13 @@ is built from C against an independently specified angler ABI header, so the mis
 `sensor_lib.h` is not needed. `android/` adds a matching `libmmcamera_ir0861` plugin. Its program is
 generated from LumiaFaceID's private profile. It also adds the three verified fixes as permanent
 kernel/DT patches and a same-length sensor-list patch (`ov4688` → `ir0861`).
+
+## Status (after LumiaFaceID `83e40ed`): the iris streams through Android's camera stack
+
+With our kernel patches 0001–0003, the `ir0861` plugin and the sensor-list patch, the iris is a normal
+Camera2 device. Runs of 554 and 335 capture results, CSID3 at 609,014 and 371,690 packets, zero
+ECC/CRC, patch 0004 not needed. The picture is gray and noisy and no IR light was used yet. Details and
+open points (RAW instead of YUV, IR frame, mount angle): [FINDINGS.md section 19](FINDINGS.md#19-first-frames-through-the-standard-android-stack-lumiafaceid-83e40ed).
 
 ## Sensor info (after LumiaFaceID `6404ee0`): taken from the DCC, not the sensor
 

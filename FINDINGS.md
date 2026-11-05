@@ -826,3 +826,48 @@ frame as `CameraAuthentication.dll` requests it. This was not traced further. Fo
 step 1 of the section 16 plan (continuous `torch_0` at the lowest current for a few seconds) is the
 way to light the first image. A later per-frame pulse would be switched by software around SOF, not
 by a sensor STROBE pin, and the PMIC hardware-strobe attribute is not needed.
+
+## 19. First frames through the standard Android stack (LumiaFaceID `83e40ed`)
+
+With our kernel patches 0001–0003 (camera@2 enabled), `libmmcamera_ir0861` and the same-length
+sensor-list patch, the iris streams through `mm-qcamera-daemon`, ISPIF and the VFE like a normal
+camera. Camera2 opened it alone and delivered continuous capture results. LumiaFaceID later flashed
+the same kernel image (#18) to boot and installed the plugin and sensor list under `/vendor`, and the
+iris streamed again after that.
+
+| Run | Capture results | CSID3 packets | ECC / CRC |
+| --- | --- | --- | --- |
+| temporary boot | 554 in about 44 s (about 13 fps) | 609,014 | 0 / 0 |
+| flashed boot | 335 in about 26 s | 371,690 | 0 / 0 |
+
+- **Patch 0004 (CSID3 `CORE_CTRL_1` bit 16) is not needed.** The standard `msm_csid` path counts
+  clean packets without it.
+- **Packets per frame are consistent with whole frames:** 609,014 / 554 ≈ 1,099 and
+  371,690 / 335 ≈ 1,109, against 1,088 lines per frame plus a few short packets.
+- **About 13 fps, not 29.9.** The plugin's mode is 29.9 fps at 1116 lines. The AE in a dark room
+  without IR asks for exposure above that frame length, and `fill_exposure` then lengthens the frame.
+  This has not been checked. The capture results carry exposure and sensitivity, which would settle it.
+- **No VFE SOF line in dmesg.** `msm_isp_check_for_output_error` logged `axi_updating_mask` for
+  streams 1 and 2 at frame 10 during start-up only. Frames still arrived, so the ISPIF select bits of
+  section 15 were already right.
+- **Camera IDs are not stable.** The iris was ID 2 on the temporary boot and ID 1 on the flashed
+  boot. LumiaFaceID's HAL change (`persist.camera.cityman.iris_last`) keeps the regular selfie
+  camera as the one Aperture opens. Anything that needs the iris has to find it by its 1920×1088
+  pixel array, not by ID.
+- **The image** is gray and noisy. One uncontrolled-light YUV frame (dark room, magenta visible
+  light, IR off) had Y mean 72.3, standard deviation 22.5, range 9–161, no clipping, and U/V within
+  about ±12 of 128, so the chroma is nearly neutral. Luma tile statistics show local contrast.
+  This is a diagnostic baseline, not a Windows Hello-like capture.
+
+**What is still open**
+
+1. **The stack treats a mono sensor as Bayer.** The plugin reports GRBG and the daemon runs the
+   imx179 chromatix, so the ISP demosaics what is probably a monochrome array. A RAW10 or RAW16
+   frame avoids that. `android/tools/iris-capture` saves one without color processing.
+2. **Pedestal, lens shading and noise tuning** are placeholders (section 18).
+3. **IR light.** The iris has no sensor strobe (section 18). `torch_0` brightness 14 for 1 s was
+   switched from a helper and the LED state read back as 0 afterwards, but no frame was taken with the
+   emitter on. That is the next image to take.
+4. **Mount angle.** The preview needed a +90° rotation in LumiaFaceID's app, so the plugin's
+   `mount_angle` (90 now) is probably not yet the real value.
+5. **The 13 fps figure** above.
