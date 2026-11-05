@@ -979,3 +979,49 @@ CCI GPIO output, most likely GPIO 21. Cheap steps, in order, each only after the
    driver supports it.
 
 The first IR frame still does not need any of this: `torch_0` at the lowest level for a short time.
+
+## 22. Windows Mobile image: the iris engine's own settings, and what they say about Android's exposure
+
+Source: the retail Windows 10 Mobile FFU for RM-1085 that LumiaFaceID located (`RM1085_1078.0053.10586.13169.12742.034EE8_retail_prod_signed.ffu`,
+2,995,126,272 bytes, SHA-256 `3c6241fc…61f4ef`, downloaded independently from LumiaDB and matching his hash). The `MainOS` NTFS partition was read
+in place, without applying anything. The extracted DLLs have the same SHA-256 as the ones listed in LumiaFaceID's `docs/windows-iris-stack-map.md`
+(`IrisSensorAdapter`, `DeltaIrisEngineAdapter`, `iris_mobile_v2.WindowsPhone`, `Icaros`, `CameraAuthentication`, `LumiaSensorAlgorithmControl`).
+No binary is included here, only values and addresses.
+
+**Windows' default iris settings (`SOFTWARE` hive of the image, key `OEM\\MMO\\Iris`).** These are shipped defaults, not measurements.
+
+| Value | Data | Notes |
+| --- | --- | --- |
+| `Sensor\\ExposureTargetAverage` | 70 | Target mean of the frame statistics the adapter logs (average, median, p90/p95/p99). Scale not checked (8-bit is the likely one). |
+| `Sensor\\InitExposureTime` | 20000 | Start exposure. Microseconds is likely: the camera component logs `ExposureTimeUs`. |
+| `Sensor\\ExposureTimeLimitMax` | 20000 | Upper exposure limit, the same as the start. No minimum value is set. |
+| `Sensor\\InitIso` | 250 | Start ISO. |
+| `Sensor\\IsoLimitMax` | 400 | Upper ISO limit. No minimum value is set. |
+| `Sensor\\ViewportX/Y/Width/Height` | 240 / 570 / 475 / 300 | A rectangle the adapter reads. What it is a crop of is not established. |
+| `Sensor\\ColdPeriod`, `MinimumBatteryTemperature` | 120000, 2682 | 2682 as tenths of a kelvin is 268.2 K, about −5 °C. The adapter logs "Min battery temp". Looks like a cold-battery guard. |
+| `Engine\\InitialFramesToSkip` | 10 | Frames dropped at start (the plugin skips 2). |
+| `Engine\\SimilarityThreshold` | 421 | Match threshold of the engine adapter. Scale unknown. |
+| `Engine\\IdentificationTimeout` | 60000 | Probably milliseconds. |
+| `Engine\\FeedbackWindow`, `FeedbackWeights` | 700, 33556481 | UI-hint scoring. Meaning not decoded. |
+
+**What it means for Android's exposure.** Windows lets its exposure control run between at most 20 ms and ISO 400, starting at 20 ms and ISO 250, aiming at a
+mean of about 70. LumiaFaceID's Camera2 readback (section 20) shows Android's default AE reaching 75 ms and ISO 4,859 with the sensor covered. That is almost
+4× the longest exposure and over 12× the highest ISO Windows would ever use, on a scale where ISO 100 is unity gain (assumed, the base was not checked).
+So Windows' design needs strong IR light in the frame; it is not tuned for a dark room. The sensible Android test follows from that: fix exposure at about
+20 ms and ISO 250 (or cap the AE at 20 ms / ISO 400) and judge the image with the IR emitter on, not with default AE in ambient light.
+
+**The recognition engine's input contract** (assertion strings of `iris_mobile_v2.WindowsPhone.dll`, which are source-level checks):
+
+- `image_width` 640–10000, `image_height` 480–10000, `nominal_resolution` 100–300, `camera_resolution` 1000–20000 (units not established).
+- One or two eyes. The engine **splits one frame into two eye images** (`split_frame(pixels, width, height, pix0, pix1, overlap, quadrant)`) and then works on
+  half-width images (`width_2`, `height_2`), so the frame is expected to show both eyes.
+- Each frame call takes a `rotation` and an `eye_info` per eye: iris centre (inside the frame), iris diameter, pupil diameter and distance to the camera.
+  Values below zero or outside the frame are rejected.
+- Not established: the pixel format of `pixels`, the numeric values of `rotation`, and how the engine's eye info is produced.
+
+**The `IrLedItf` registry key is a notification, not LED control (inferred).** `IrisSensorAdapter::SetLedEnabled` writes
+`HKLM\\SOFTWARE\\OEM\\MMO\\Iris\\IrLedItf\\IrLedEnabled` (0 or 1). The only consumer found in the whole `MainOS` image is `AlsPrxAlphamon.dll`, the
+ambient-light and proximity driver (Avago QPDS-T900/T930). It watches that key with `RegNotifyChangeKeyValue` and keeps the flag, and it has its own
+"IRIS mode" thresholds. That reads like "tell the light sensor that the iris IR emitter is on". The driver's `LEDdriveStrength` and `PulseCount` belong to
+the proximity sensor's own emitter. I did not trace what the driver does with the flag, so this is a reading, not a proof. It also means the registry
+key is not how the iris emitter is switched; section 21's CCI path is.
