@@ -904,3 +904,43 @@ kernel side: the plugin sets `is_flash_supported = 0`, `camera@2` has no `qcom,l
 Camera2 flash controls cannot reach the iris. It also finds that wiring `torch0_trigger` would put
 the PMIC's 120 mA operating current (not the 14 mA sysfs level) on the iris, and that `msm_flash`'s
 watchdog does not cover `CFG_FLASH_LOW`. Those are reasons not to enable the generic torch route.
+
+## 21. How the iris driver turns an AEC result into a flash request (partial)
+
+This follows section 16/18 into the per-frame path. Addresses are in `qccamsensor_tertiarySMIApp8994.sys`
+(SHA-256 `0ea99897…78e5`).
+
+**Established**
+
+- `0x405e80` is the per-frame AEC-result handler. The AEC result carries a flash state, and the
+  handler maps it to a mode and logs it: **1 = `LP_FLASH`, 2 = `HP_FLASH`, 3 = `OF_FLASH`** (the
+  log strings at `0x40631c`, `0x406324`, `0x40632c`). Mode 3 is chosen from one byte of the result,
+  mode 2 from a second flag, mode 1 otherwise. `OF` is most likely "out of frame", matching
+  `UseFlashOutOfFrame` in `CameraAuthentication.dll`. That expansion is an inference.
+  These are the same modes 1/2/3 whose pulse length the flash driver clamps (section 5: 80000 for
+  1/2, 40000 for 3).
+- There are two ways to arm the flash. If a flash device handle exists, `0x40aa20` builds a small
+  request, `{enable flag, delay, time}`. The time comes from the frame's exposure timing (line time
+  × exposure lines, scaled ×10, plus the exposure start time), and the request is rejected unless
+  the time lies inside the flash device's min/max. Otherwise `0x40afa0` arms the "CCI HW" sequence
+  via `0x40b134`. Both are in the AEC handler's own flow, not in a separate thread.
+- The sensor-strobe trigger `0x0c1b = 1` written by `0x40d324` (frame event 4) is the second half of
+  the sensor-strobe path from section 16. The flag it tests is the same word that `0x41452c` sets
+  (`0x831f60`, written as `piVar3[0xb]` there and read as `piVar4[0x17]` here). So that trigger only
+  fires after `0x41452c` has armed it, and `0x41452c` fails on this sensor (capability 0, section 18).
+  This keeps section 18's conclusion, and now rests on the shared flag as well as the gating.
+
+**Not established**
+
+- Which of the two paths the iris takes. It depends on whether the flash device handle in the
+  driver's global (`+0x18` of the structure at `0x83b340`) is non-null while the iris streams. The
+  tertiary flash driver is in the package, so the flash-device path is likely, but this was not traced.
+- What the request does after `0x40b360` hands it on, and which units the time uses. So there is no
+  recipe yet for a host-timed pulse on Linux.
+- Who produces the AEC flash state for the iris. `CameraAuthentication.dll` writes `FlashMode`,
+  `FlashState`, `FlashPower`, `FlashCtrlPulseUs` and `PreFlashIndex`, and its strings are not
+  reachable by literal-pool search (ARM Thumb-2 address building), so its code was not located here.
+
+What this means for LumiaFaceID: the flash request is computed per frame from exposure timing and
+checked against the flash device's limits, then carried out by the flash driver. Matching that on
+Linux means a frame-timed `msm_flash` request, which is what LumiaFaceID's audit already concludes.
