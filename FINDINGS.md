@@ -988,21 +988,21 @@ in place, without applying anything. The extracted DLLs have the same SHA-256 as
 (`IrisSensorAdapter`, `DeltaIrisEngineAdapter`, `iris_mobile_v2.WindowsPhone`, `Icaros`, `CameraAuthentication`, `LumiaSensorAlgorithmControl`).
 No binary is included here, only values and addresses.
 
-**Windows' default iris settings (`SOFTWARE` hive of the image, key `OEM\\MMO\\Iris`).** These are shipped defaults, not measurements.
+**Windows' default iris settings (`SOFTWARE` hive of the image, key `OEM\MMO\Iris`).** These are shipped defaults, not measurements.
 
 | Value | Data | Notes |
 | --- | --- | --- |
-| `Sensor\\ExposureTargetAverage` | 70 | Target mean of the frame statistics the adapter logs (average, median, p90/p95/p99). Scale not checked (8-bit is the likely one). |
-| `Sensor\\InitExposureTime` | 20000 | Start exposure. Microseconds is likely: the camera component logs `ExposureTimeUs`. |
-| `Sensor\\ExposureTimeLimitMax` | 20000 | Upper exposure limit, the same as the start. No minimum value is set. |
-| `Sensor\\InitIso` | 250 | Start ISO. |
-| `Sensor\\IsoLimitMax` | 400 | Upper ISO limit. No minimum value is set. |
-| `Sensor\\ViewportX/Y/Width/Height` | 240 / 570 / 475 / 300 | A rectangle the adapter reads. What it is a crop of is not established. |
-| `Sensor\\ColdPeriod`, `MinimumBatteryTemperature` | 120000, 2682 | 2682 as tenths of a kelvin is 268.2 K, about −5 °C. The adapter logs "Min battery temp". Looks like a cold-battery guard. |
-| `Engine\\InitialFramesToSkip` | 10 | Frames dropped at start (the plugin skips 2). |
-| `Engine\\SimilarityThreshold` | 421 | Match threshold of the engine adapter. Scale unknown. |
-| `Engine\\IdentificationTimeout` | 60000 | Probably milliseconds. |
-| `Engine\\FeedbackWindow`, `FeedbackWeights` | 700, 33556481 | UI-hint scoring. Meaning not decoded. |
+| `Sensor\ExposureTargetAverage` | 70 | Target mean of the frame statistics the adapter logs (average, median, p90/p95/p99). Scale not checked (8-bit is the likely one). |
+| `Sensor\InitExposureTime` | 20000 | Start exposure. Microseconds is likely: the camera component logs `ExposureTimeUs`. |
+| `Sensor\ExposureTimeLimitMax` | 20000 | Upper exposure limit, the same as the start. No minimum value is set. |
+| `Sensor\InitIso` | 250 | Start ISO. |
+| `Sensor\IsoLimitMax` | 400 | Upper ISO limit. No minimum value is set. |
+| `Sensor\ViewportX/Y/Width/Height` | 240 / 570 / 475 / 300 | A rectangle the adapter reads. What it is a crop of is not established. |
+| `Sensor\ColdPeriod`, `MinimumBatteryTemperature` | 120000, 2682 | 2682 as tenths of a kelvin is 268.2 K, about −5 °C. The adapter logs "Min battery temp". Looks like a cold-battery guard. |
+| `Engine\InitialFramesToSkip` | 10 | Frames dropped at start (the plugin skips 2). |
+| `Engine\SimilarityThreshold` | 421 | Match threshold of the engine adapter. Scale unknown. |
+| `Engine\IdentificationTimeout` | 60000 | Probably milliseconds. |
+| `Engine\FeedbackWindow`, `FeedbackWeights` | 700, 33556481 | UI-hint scoring. Meaning not decoded. |
 
 **What it means for Android's exposure.** Windows lets its exposure control run between at most 20 ms and ISO 400, starting at 20 ms and ISO 250, aiming at a
 mean of about 70. LumiaFaceID's Camera2 readback (section 20) shows Android's default AE reaching 75 ms and ISO 4,859 with the sensor covered. That is almost
@@ -1020,7 +1020,7 @@ So Windows' design needs strong IR light in the frame; it is not tuned for a dar
 - Not established: the pixel format of `pixels`, the numeric values of `rotation`, and how the engine's eye info is produced.
 
 **The `IrLedItf` registry key is a notification, not LED control (inferred).** `IrisSensorAdapter::SetLedEnabled` writes
-`HKLM\\SOFTWARE\\OEM\\MMO\\Iris\\IrLedItf\\IrLedEnabled` (0 or 1). The only consumer found in the whole `MainOS` image is `AlsPrxAlphamon.dll`, the
+`HKLM\SOFTWARE\OEM\MMO\Iris\IrLedItf\IrLedEnabled` (0 or 1). The only consumer found in the whole `MainOS` image is `AlsPrxAlphamon.dll`, the
 ambient-light and proximity driver (Avago QPDS-T900/T930). It watches that key with `RegNotifyChangeKeyValue` and keeps the flag, and it has its own
 "IRIS mode" thresholds. That reads like "tell the light sensor that the iris IR emitter is on". The driver's `LEDdriveStrength` and `PulseCount` belong to
 the proximity sensor's own emitter. I did not trace what the driver does with the flag, so this is a reading, not a proof. It also means the registry
