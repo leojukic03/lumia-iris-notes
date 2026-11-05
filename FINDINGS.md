@@ -943,23 +943,39 @@ This is the same conclusion as section 18's first version, now with a mechanism 
 gating of one function. Two links are inferred, not traced: that the 0x14-byte block is copied from the
 same limits (`+0x110`/`+0x114`), and that the 4-command sequence is a pulse on an output line.
 
+**The CCI commands, decoded (`qccamplatform8994.sys`, CCI HAL)**
+
+`0x407bb0` turns each software command into a hardware queue word. The low 4 bits are the opcode.
+
+| Software command | Hardware word | Meaning |
+| --- | --- | --- |
+| `0x80` (value `v`) | `(scale · v) << 4 \| 2` | **WAIT**, up to 13,000,000 units, overflow-checked. The scale is a per-device factor (cycles per time unit). |
+| `0x100` (index `n`, level `l`) | `((1 << (n + 4)) \| (l << (n + 12))) & ~9 \| 6` | **SET GPIO**: bit `n + 4` selects one of **5 outputs** (`n` < 5), bit `n + 12` is its level (`l` < 2). |
+
+The queue-append check (`0x41fcf0` and its twin `0x408f90`) accepts the `0x20`–`0x200` commands only on queue type 0 and the I2C commands (`0x1`, `0x4`, `0x8`) only on types 1 and 2. The IRQ decoders name the queues: I2C `M0/M1 Q0/Q1` and **`GPIO_Q0/Q1/Q2`**. So the CCI has three GPIO command queues next to the I2C ones, and the iris pulse runs on one of them.
+
+So `0x40b134` is: wait `delay`, **set CCI GPIO output 0 high**, wait `time`, **set it low**. This is a hardware-timed pulse with no CPU in the loop.
+
+**Which pin.** On MSM8994 the CCI timer pins are TLMM GPIO 21–25 = `cci_timer0`–`cci_timer4` (mainline `pinctrl-msm8994.c`: `PINGROUP(21, cci_timer0 …)` through `PINGROUP(25, cci_timer4 …)`). The ACPI camera platform device `CAMP` (`QCOM245E`, which also holds the CCI registers at `0xFDA0C000`) lists, among others, **GPIO 21 (`0x15`)** and GPIO 12 (`0x0C`, the rear flash pin per the port's DT notes). Output index 0 mapping to `cci_timer0` is an assumption, but GPIO 21 is in the platform's list. So the most likely wiring is: CCI timer 0 pin, GPIO 21, driven by the CCI hardware, going toward the flash (PMI8994 strobe input). The last hop is an inference: nothing here shows what GPIO 21 is connected to.
+
 **Not established**
 
-- What the CCI commands `0x80` and `0x100` do in hardware (delay and output set are the likely
-  reading), which line they switch (a CCI timer or GPIO, or something else), and the unit of the
-  delay and time values (likely microseconds after the `/ 10`).
-- How that line reaches the IR emitter. `CAMT` lists only GPIO 14 and 102, so it is not one of those.
-  Section 16's idea of a sensor STROBE pin wired to the PMI8994 hardware strobe is therefore unlikely,
-  but the real wiring is not known.
-- Whether the Linux `msm_cci` driver can run such a queue. The kernel tree in the session is partial
-  and could not be checked.
-- The registry byte (selector) and who calls `0x405e80` with a flash state for the iris.
-  `CameraAuthentication.dll` writes `FlashMode`, `FlashState`, `FlashPower`, `FlashCtrlPulseUs` and
-  `PreFlashIndex`, but its code was not located (ARM Thumb-2 address building defeats a literal-pool
-  search).
+- That output index 0 is the `cci_timer0` pin (GPIO 21), and that GPIO 21 reaches the PMI8994 flash strobe input. Both are consistent with everything above, neither is read from a schematic.
+- The unit of the delay and time values (the `/ 10` and the scale factor suggest microseconds, unverified), and the registry byte passed as the queue selector.
+- Whether the Linux `msm_cci` driver can run GPIO queue commands. The kernel tree in the session is partial.
+- Who calls `0x405e80` with a flash state for the iris. `CameraAuthentication.dll` writes `FlashMode`, `FlashState`, `FlashPower`, `FlashCtrlPulseUs` and `PreFlashIndex`, but its code was not located.
 
-**What this means for LumiaFaceID.** Do not plan around the sensor strobe registers. A pulse timed to
-the frame on Windows is a SoC CCI sequence. On Linux the practical options remain a software-timed
-`torch_0` pulse around SOF, with the bounded current of LumiaFaceID's own audit, or finding whether
-`msm_cci` can queue the same wait/set commands. The first IR frame should still use the lowest
-`torch_0` level for a short time.
+**What this means for LumiaFaceID.** Do not plan around the sensor strobe registers. The pulse on Windows is a
+CCI GPIO output, most likely GPIO 21. Cheap steps, in order, each only after the previous one is clean:
+
+1. **Read-only:** find out who owns GPIO 21 on the running kernel (`/sys/kernel/debug/gpio`, the pinctrl
+   `pinmux-pins` file) and whether it is muxed to `cci_timer0` or left as a plain GPIO.
+2. **Read the PMI8994 strobe control layout** in the pinned `leds-qpnp-flash.c` (section 16 notes that `0x40`
+   is both the hardware-strobe type and `FLASH_LED1_TRIGGER`). Only if hardware strobe is understood:
+3. **One short test** with `torch_0` at the lowest level in hardware-strobe mode and GPIO 21 driven as a
+   plain output for about 1 ms. A visible blink would confirm the wiring. Nothing more than that, and
+   the LED state read back to 0 after.
+4. If it blinks, a per-frame pulse can be a software GPIO write around SOF, or a `msm_cci` GPIO queue if that
+   driver supports it.
+
+The first IR frame still does not need any of this: `torch_0` at the lowest level for a short time.
