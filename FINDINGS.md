@@ -1015,9 +1015,9 @@ So Windows' design needs strong IR light in the frame; it is not tuned for a dar
 - `image_width` 640–10000, `image_height` 480–10000, `nominal_resolution` 100–300, `camera_resolution` 1000–20000 (units not established).
 - One or two eyes. The engine **splits one frame into two eye images** (`split_frame(pixels, width, height, pix0, pix1, overlap, quadrant)`) and then works on
   half-width images (`width_2`, `height_2`), so the frame is expected to show both eyes.
-- Each frame call takes a `rotation` and an `eye_info` per eye: iris centre (inside the frame), iris diameter, pupil diameter and distance to the camera.
-  Values below zero or outside the frame are rejected.
-- Not established: the pixel format of `pixels`, the numeric values of `rotation`, and how the engine's eye info is produced.
+- The checks on `eye_info` (iris centre inside the frame, iris and pupil diameter, distance to the camera, none negative) are on the *lower-level*
+  `irm_on_*_frame` calls. The exported `irm2_on_frame` takes only the pixels and a rotation (section 23).
+- Pixel format, rotation and the engine's own eye finding are resolved in section 23.
 
 **The `IrLedItf` registry key is a notification, not LED control (inferred).** `IrisSensorAdapter::SetLedEnabled` writes
 `HKLM\SOFTWARE\OEM\MMO\Iris\IrLedItf\IrLedEnabled` (0 or 1). The only consumer found in the whole `MainOS` image is `AlsPrxAlphamon.dll`, the
@@ -1025,3 +1025,51 @@ ambient-light and proximity driver (Avago QPDS-T900/T930). It watches that key w
 "IRIS mode" thresholds. That reads like "tell the light sensor that the iris IR emitter is on". The driver's `LEDdriveStrength` and `PulseCount` belong to
 the proximity sensor's own emitter. I did not trace what the driver does with the flag, so this is a reading, not a proof. It also means the registry
 key is not how the iris emitter is switched; section 21's CCI path is.
+
+## 23. The iris engine's frame contract, traced (`iris_mobile_v2.WindowsPhone.dll`, `DeltaIrisEngineAdapter.dll`)
+
+Read with Ghidra 12.1.4 through REA from the RM-1085 image (section 22). Addresses are in the extracted ARM Thumb-2 DLLs.
+
+**Frame format (strong evidence).** `irm2_on_frame(ctx, pixels, rotation)` (`0x10011690`) takes **8-bit grey pixels, row after row, with the row pitch equal to the
+image width**. Two independent reasons: `split_frame` (`0x1001055c`) copies with `memmove` using byte counts equal to the pixel counts, and the engine's working
+buffer is sized `width × height + max(width, height) × 300` **bytes** plus a fixed 0x249a20 (`FUN_10007d7c`, the adapter's call to `irm2_init_enrollment`). There is no
+stride argument. The engine takes the width and height the adapter read from the sensor adapter and checks 640–10000 × 480–10000.
+
+**One frame, two eyes.** The frame is split into two eye images with an **overlap of 300 pixels** (the overlap is `min(300, size / 2)`):
+
+| Rotation (degrees, taken modulo 360, then `(rot + 45) / 90`) | Split | Each eye image |
+| --- | --- | --- |
+| 0 or 180 | along the width: first and last halves of every row | `(W + 300) / 2` wide, `H` tall |
+| 90 or 270 | along the height: top and bottom halves | `W` wide, `(H + 300) / 2` tall |
+
+The two destination buffers are swapped for the 180° and 270° cases, so the rotation also decides which half is left and which is right. `rotation` is therefore an
+angle in degrees, not an enum. Both eyes must be in the same frame, separated along its long or short axis according to the rotation.
+
+**The engine finds the eyes itself.** `irm2_on_frame` takes no eye coordinates. `irm2_get_eye_info` returns what the engine found (the adapter logs iris centre,
+iris and pupil radius, distance, occlusion and reflection per eye), and `irm2_get_camera_control` returns what it wants from the exposure. The sensor adapter
+applies that within the limits of section 22 (`EngineSetExposure`, `UpdateExposure`). So the loop is: frame in, eye info and exposure advice out. LumiaFaceID's
+face-detector ROI is an approximation of a step that the Windows engine does internally.
+
+**Engine settings (`FUN_1001a964`).** Defaults in code, overridden from `HKLM\SOFTWARE\OEM\MMO\Iris\Engine`. Only five values exist in the image's hive (`InitialFramesToSkip`
+10, `SimilarityThreshold` 421, `IdentificationTimeout` 60000, `FeedbackWindow` 700, `FeedbackWeights`), so the rest are the defaults below. Name-to-field mapping comes
+from the matching register reads and defaults in that function. Units of the exposure values were not established.
+
+| Setting | Default | Setting | Default |
+| --- | --- | --- | --- |
+| `Workers` | 2 | `CameraResolution` | 3625 (accepted range 1000–20000) |
+| `WorkInterval` | 100 | `NominalResolution` | 147 (accepted range 100–300) |
+| `InitialFramesToSkip` | 0 (image: 10) | `FocusDistance` | 25 |
+| `ExposureControlFrames` | 10 | `DarkLevel` / `BrightLevel` / `MedianLevel` | 180 / 250 / 180 |
+| `InitialExposure` / `MinimumExposure` / `MaximumExposure` | 100 / 2 / 266 | `MaximumIntegrationTime` | 32 |
+| `CameraPipelineDepth` | 3 | `WhiteBalanceEnabled`, `AntiSpoofingOptimzationEnabled` | on, on |
+| `SimilarityThreshold` | 600 (image: 421) | `MaximumSpoofs`, `ExposureMultiplier` | 0, 0 |
+
+`NominalResolution` 147 sits inside the range of pixels across the iris that iris-image standards use, which fits a "pixels across the iris" meaning, but that reading
+is a guess. `FocusDistance` 25 is presumably centimetres; also a guess.
+
+**Where the pieces connect (registry, image).** The WinBio iris virtual sensor (`SYSTEM\...\WbioSrvc\Service Providers\Iris`) names `DeltaIrisEngineAdapter.dll`,
+`IrisSensorAdapter.dll` and the standard `WinBioStorageAdapter.DLL`. Templates are therefore kept by Windows' ordinary biometric storage adapter, not by the engine.
+`CaptureIntervalInMilliseconds` is 16.
+
+**Not established.** The sensor frame size and cropping that Windows hands the engine (the `Viewport…` values of section 22 are not 640×480 or larger, so they are
+not the engine frame), how raw 10-bit data becomes the 8-bit frame, the matcher's score scale, template format, and the liveness logic.
