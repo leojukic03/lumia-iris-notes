@@ -1249,23 +1249,23 @@ Ghidra through REA, and with Capstone where Ghidra had not created a function.
 The limits 0x4F and 0xF are the PMI8994 **flash** and **torch** current fields (the Linux `leds-qpnp-flash` driver uses `FLASH_MAX_LEVEL 0x4F` and `TORCH_MAX_LEVEL 0x0F`). The flash driver puts the assist code in the first value and 0 in the
 second. **Windows drives the iris emitter in flash mode, not torch mode.** Codes 22 and 23 could not even be torch codes, which stop at 15.
 
-**In milliamps (estimate).** Two scales give nearly the same answer:
+**In milliamps (estimate).** Two scales give nearly the same answer. (An earlier version of this table used `(code + 1) × 12.5` for the second column. That had no support. LumiaFaceID pointed out that the PMI8994 specification gives 12.5 mA steps, so the nominal scale is `code × 12.5`. Corrected here.)
 
-| Code | Power level | Linux scale (`code × 1000 / 79`) | `(code + 1) × 12.5` |
+| Code | Power level | Linux scale (`code × 1000 / 79`) | Nominal `code × 12.5` |
 | --- | --- | --- | --- |
-| 10 | 13 % (and the start-up value) | 127 mA | 138 mA |
-| 15 | 20 % | 190 mA | 200 mA |
-| 23 | 30 % | 291 mA | 300 mA |
-| 22 | 100 % | 278 mA | 288 mA |
+| 10 | 13 % (and the start-up value) | 127 mA | 125 mA |
+| 15 | 20 % | 190 mA | 188 mA |
+| 23 | 30 % | 291 mA | 288 mA |
+| 22 | 100 % | 278 mA | 275 mA |
 
-The first column is how this Linux kernel itself programs the same register for `flash_0`. The second is the common "12.5 mA per step" reading of the register. They differ by about 10 mA. The unit is still not taken
-from a PMI8994 document, so this is an estimate with that 10 mA spread. Section 24's `SetInitialVideoConfigToSensor` starts with `FlashPower` 100. If that is the same percentage as these levels (not traced), Windows
-starts at code 22, about 280 mA.
+The first column is how this Linux kernel itself programs the same register for `flash_0`. The second is the common "12.5 mA per step" reading of the register. They differ by a few mA. These are register-derived estimates, not optical measurements. Section 24's `SetInitialVideoConfigToSensor` starts with `FlashPower` 100. If that is the same percentage as these levels (not traced), Windows
+starts at code 22, about 275–280 mA.
 
 **What it means for Android.** LumiaFaceID's test used `torch_0` brightness 14, which this kernel programs as torch code 1, about 13 mA (25 mA on the other scale). That is **roughly 10 to 20 times below** Windows' lowest
-assist level, and in a different mode. Windows also limits pulses (section 5: at most 80,000 or 40,000, probably µs, a cooldown above 2 s accumulated on-time). So Windows uses short pulses of about 130–290 mA. This tells
+assist level, and in a different mode (torch code 1 is 12.5 mA nominal). Windows also limits pulses (section 5: at most 80,000 or 40,000, probably µs, a cooldown above 2 s accumulated on-time). So Windows uses short pulses of about 130–290 mA. This tells
 what Windows does. It does **not** show that any level is eye-safe on this phone, and copying Windows' current into a continuous torch would be a very different exposure from Windows' short pulses.
 
-**Measuring the right level without knowing the optics (for LumiaFaceID).** Use the iris camera itself as the meter. Fixed exposure 20 ms and ISO 250 (Windows' start values, section 22), a diffuse target at about 25 cm
-(Engine `FocusDistance` 25), no person in front of the emitter. Start at `torch_0` 14 and step up slowly, one short pulse per step, recording mean luma. The lowest level that reaches a mean of about 70 (Windows'
-`ExposureTargetAverage`) is the level that matches Windows' design point for that distance. Stop long before Windows' own currents unless a pulse-limited path exists.
+**Retracted: the "step up until the mean luma reaches 70" procedure.** An earlier version of this section suggested raising `torch_0` in small steps until the frame mean reached Windows' target of 70. LumiaFaceID
+rightly rejected that, and it is withdrawn. Image luma does not measure exposure of the eye, Windows' mean-luma target is an exposure-control setting and not a safety target, and a continuous torch raised toward
+the Windows currents is a different exposure from Windows' short pulses. Do not run that sweep and do not use the Windows codes on Android. The responsible path is the one LumiaFaceID already describes: reproduce a
+camera-controlled, time-bounded flash path with a hard shut-off, and establish the optical output with a calibrated measurement before any level above the current minimum is used on anything but a diffuse target.
